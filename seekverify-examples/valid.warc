@@ -1,0 +1,460 @@
+WARC/1.0
+WARC-Record-ID: <urn:uuid:seekverify-large>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Type: response
+WARC-Target-URI: http://example.com/large
+WARC-Payload-Digest: sha1:HT4PI4U4DYD5IZLSAOAJG2UAAKAGFJU6
+WARC-Block-Digest: sha1:MTWXPIKFCUWXWYPV5TDB3SOBEQ4W3B5A
+Content-Type: application/http; msgtype=response
+Content-Length: 11645
+
+HTTP/1.0 200 OK
+Content-Type: text/plain
+
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+seekverify-payload-line-0000
+
+
+WARC/1.0
+WARC-Record-ID: <urn:uuid:seekverify-empty>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Type: response
+WARC-Target-URI: http://example.com/empty
+WARC-Payload-Digest: sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ
+WARC-Block-Digest: sha1:6FS2JUYBXFNKFM7DTILGLDP7HJO25ITG
+Content-Type: application/http; msgtype=response
+Content-Length: 45
+
+HTTP/1.0 200 OK
+Content-Type: text/plain
+
+
+
+WARC/1.0
+WARC-Record-ID: <urn:uuid:seekverify-request>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Type: request
+WARC-Target-URI: http://example.com/large
+WARC-Payload-Digest: sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ
+WARC-Block-Digest: sha1:BRCTKIE3SGMM2WTP7J7JGACH7WBW4SBX
+Content-Type: application/http; msgtype=request
+Content-Length: 18
+
+GET / HTTP/1.0
+
+
+
+WARC/1.0
+WARC-Record-ID: <urn:uuid:seekverify-resource>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Type: resource
+WARC-Target-URI: urn:seekverify:binary
+WARC-Payload-Digest: sha1:LMAGNHCIBVOP7PP2RPN2TFLBCYHS2G3X
+WARC-Block-Digest: sha1:LMAGNHCIBVOP7PP2RPN2TFLBCYHS2G3X
+Content-Type: application/warc-record
+Content-Length: 1024
+
+ 	
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖ×ØÙÚÛÜİŞßàáâãäåæçèéêëìíîïğñòóôõö÷øùúûüışÿ 	
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖ×ØÙÚÛÜİŞßàáâãäåæçèéêëìíîïğñòóôõö÷øùúûüışÿ 	
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖ×ØÙÚÛÜİŞßàáâãäåæçèéêëìíîïğñòóôõö÷øùúûüışÿ 	
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~€‚ƒ„…†‡ˆ‰Š‹Œ‘’“”•–—˜™š›œŸ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖ×ØÙÚÛÜİŞßàáâãäåæçèéêëìíîïğñòóôõö÷øùúûüışÿ
+
