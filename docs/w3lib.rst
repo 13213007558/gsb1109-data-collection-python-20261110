@@ -15,6 +15,13 @@ w3lib Package
     :members:
 
 
+:mod:`~w3lib.microdata` Module
+--------------------------------
+
+.. automodule:: w3lib.microdata
+    :members:
+
+
 :mod:`~w3lib.http` Module
 -------------------------
 

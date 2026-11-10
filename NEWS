@@ -1,6 +1,20 @@
 w3lib release notes
 ===================
 
+2.7.0 (unreleased)
+------------------
+
+New features:
+
+- Added :func:`w3lib.microdata.extract_microdata`, which extracts the
+  Microdata items of an HTML document from its ``itemscope``/``itemprop``
+  markup. It keeps the item types (``itemtype``) and identity (``itemid``),
+  every value of multi-valued properties, nested items and properties pulled
+  in through ``itemref``, including referenced elements outside the item's
+  subtree. Element-specific value sources are distinguished, URL values are
+  resolved against the document base URL, and repeated or cyclic references
+  never expand indefinitely.
+
 2.6.0 (2026-11-05)
 ------------------
 
