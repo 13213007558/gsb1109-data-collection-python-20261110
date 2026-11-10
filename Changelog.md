@@ -1,5 +1,19 @@
 # Changelog
 
+### 0.15.0 (unreleased)
+
+Added `ItemAdapter.build_item()` and the `itemadapter.build_item()` alias to
+build dataclass, attrs and pydantic items from a mapping through their own
+constructor, instead of assigning attributes on an instance. This runs the
+constructor exactly once, so converters, validators and other initialization
+logic are honored. Missing keys let fields use their defaults or default
+factories, while keys explicitly set to `None` are passed as-is, and nested
+item classes are built recursively, including inside containers and optional
+fields. Unknown input fields, fields excluded from the constructor
+(`init=False`) and item classes that cannot be built from a mapping raise the
+new `itemadapter.ItemConstructionError` with the path of the offending field
+and the reason; errors raised by the constructor are propagated unchanged.
+
 ### 0.14.0 (2026-10-29)
 
 Removed support for Python 3.9 and 3.10, and added support for Python 3.15

@@ -3,11 +3,12 @@ from __future__ import annotations
 import dataclasses
 import warnings
 from abc import ABCMeta, abstractmethod
-from collections.abc import Iterable, Iterator, KeysView, MutableMapping
+from collections.abc import Iterable, Iterator, KeysView, Mapping, MutableMapping
 from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, ClassVar, cast
 
+from itemadapter._construct import build_item_for_adapter
 from itemadapter._imports import _is_typeddict, _scrapy_item_classes, attrs
 from itemadapter._json_schema import (
     _json_schema_from_attrs,
@@ -447,6 +448,23 @@ class ItemAdapter(MutableMapping[str, Any]):
         _state = _state or _JsonSchemaState(adapter=cls, containers={item_class})
         adapter_class = cls._get_adapter_class(item_class)
         return adapter_class.get_json_schema(item_class, _state=_state)
+
+    @classmethod
+    def build_item(cls, item_class: type, data: Mapping[str, Any] | None = None) -> Any:
+        """Build an instance of *item_class* from the *data* mapping through its
+        own constructor, instead of assigning attributes on an instance.
+
+        The constructor is invoked exactly once, so converters, validators and
+        other initialization logic of dataclass, attrs and pydantic item classes
+        are honored. Missing keys let fields use their defaults or default
+        factories, while keys explicitly set to ``None`` are passed as-is.
+        Nested supported item classes are built recursively. Structural problems
+        (unknown fields, fields excluded from the constructor, unsupported item
+        classes, invalid nested inputs) raise
+        :class:`~itemadapter.ItemConstructionError` with the field path and the
+        reason; errors raised by the constructor are propagated unchanged.
+        """
+        return build_item_for_adapter(cls, item_class, data)
 
     @property
     def item(self) -> Any:

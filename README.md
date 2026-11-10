@@ -146,6 +146,58 @@ but it doesn't traverse the object recursively converting nested items:
 >>>
 ```
 
+### Building items from mappings
+
+Collected data usually starts out as plain dictionaries. Turning those
+dictionaries into the project's dataclass, attrs or pydantic items by assigning
+attributes one by one bypasses the constructors of those types, and so skips
+their converters, validators and other initialization logic. The
+`ItemAdapter.build_item()` class method (and its `itemadapter.build_item()`
+alias) builds an item through its own constructor instead:
+
+```python
+>>> from dataclasses import dataclass, field
+>>> from itemadapter import ItemAdapter
+>>> @dataclass
+... class Price:
+...     value: int
+...     currency: str = "USD"
+...     tags: list = field(default_factory=list)
+>>> @dataclass
+... class Product:
+...     name: str
+...     price: Price
+>>> item = ItemAdapter.build_item(
+...     Product,
+...     {"name": "Stuff", "price": {"value": 42}},
+... )
+>>> item
+Product(name='Stuff', price=Price(value=42, currency='USD', tags=[]))
+>>>
+```
+
+Nested item classes are built recursively from mapping inputs, including inside
+lists, sets, tuples and dictionaries, and in `T | None` fields. A missing key
+is not passed to the constructor, so the field keeps its default or default
+factory, while a key explicitly set to `None` is passed as-is:
+
+```python
+>>> ItemAdapter.build_item(Price, {"value": 1}).tags
+[]
+>>> ItemAdapter.build_item(Price, {"value": 1, "tags": None}).tags is None
+True
+>>>
+```
+
+Fields that cannot be set through the constructor, such as dataclass or attrs
+fields declared with `init=False`, are never assigned directly: they are left
+to the constructor, exactly as in a direct construction. Unknown input fields,
+fields excluded from the constructor and unsupported item classes raise
+`itemadapter.ItemConstructionError`, whose message contains the path of the
+offending field and the reason. Errors raised by the constructor itself
+(validation or conversion errors, missing required arguments, ...) are
+propagated unchanged.
+
 ---
 
 ## API reference
