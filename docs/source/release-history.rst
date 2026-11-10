@@ -7,6 +7,10 @@ In Development
 
 - Added a “funding” link to the project’s PyPI listing. You can donate to EDGI’s work (including this project) at https://envirodatagov.org/donate/. (:issue:`222`)
 
+- :meth:`wayback.WaybackClient.get_memento` now exposes structured navigation information on the returned :class:`wayback.Memento`. The new :attr:`~wayback.Memento.navigation` attribute is a tuple of :class:`wayback.RedirectStep` objects that clearly separates service-level snapshot adjustments (:attr:`wayback.RedirectType.service`) from the archived site's own historical redirects (:attr:`wayback.RedirectType.historical`), preserving each step's real capture timestamp and original target URL. The existing ``history`` and ``debug_history`` attributes are unchanged.
+
+- Added ``historical_redirect_window`` and ``same_site`` parameters to :meth:`wayback.WaybackClient.get_memento`. These let callers limit how far historical redirects may drift in time or cross to another site. When a boundary would be crossed, playback stops and raises :class:`wayback.exceptions.MementoRedirectBoundaryError` with the memento and navigation evidence gathered so far, instead of silently following through to a much later or present-day page.
+
 
 v0.5.1 (2026-06-19)
 -------------------

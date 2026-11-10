@@ -33,13 +33,14 @@ from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutError
 from warnings import warn
 from . import _utils, __version__
-from ._models import CdxRecord, Memento, Mode
+from ._models import CdxRecord, Memento, Mode, RedirectStep, RedirectType
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
     BlockedByRobotsError,
     BlockedSiteError,
     MementoPlaybackError,
+    MementoRedirectBoundaryError,
     NoMementoError,
     WaybackRetryError,
     RateLimitError,
@@ -110,6 +111,80 @@ def read_and_close(response):
 
 
 REDIRECT_PAGE_PATTERN = re.compile(r'Got an? HTTP 3\d\d response at crawl time', re.IGNORECASE)
+
+# Matches an "http://" or "https://" scheme and an optional "www"/"www1"/...
+# prefix. Used for the loose URL comparisons Wayback's SURT matching makes
+# necessary (HTTP vs. HTTPS and www vs. non-www are treated as the same URL).
+PROTOCOL_AND_WWW = re.compile(r'^https?://(www\d?\.)?')
+WWW_PREFIX = re.compile(r'^www\d?\.')
+
+
+def parse_memento_target(memento_url):
+    """
+    Return the ``(original_url, timestamp)`` represented by a Wayback URL.
+
+    This is a tolerant version of :func:`wayback._utils.memento_url_data`: if
+    the URL does not embed a capture timestamp (e.g. a timegate URL like
+    ``https://web.archive.org/web/https://example.com/``), the original URL is
+    returned with a timestamp of ``None`` instead of raising an error.
+    """
+    try:
+        target_url, target_date, _ = _utils.memento_url_data(memento_url)
+    except ValueError:
+        target_url, target_date = memento_url, None
+    return target_url, target_date
+
+
+def site_key(url):
+    """
+    Reduce a URL to a comparable site identifier.
+
+    The protocol and any ``www.``/``www1.``-style prefix are ignored, matching
+    how Wayback's SURT-based URL matching treats them, so that
+    ``http://www.epa.gov/a`` and ``https://epa.gov/b`` count as the same site.
+    """
+    host = (urlparse(url).hostname or '').casefold()
+    return WWW_PREFIX.sub('', host)
+
+
+def build_redirect_step(response, current_url, current_date, is_memento):
+    """
+    Build a :class:`wayback.RedirectStep` describing the redirect in
+    ``response`` (which must have a ``next`` request to follow).
+    """
+    target_memento_url = response.next.url
+    target_url, target_date = parse_memento_target(target_memento_url)
+    return RedirectStep(
+        type=RedirectType.historical if is_memento else RedirectType.service,
+        memento_url=response.url,
+        url=current_url,
+        timestamp=current_date,
+        status_code=response.status_code,
+        target_memento_url=target_memento_url,
+        target_url=target_url,
+        target_timestamp=target_date,
+    )
+
+
+def redirect_boundary(step, original_date, historical_redirect_window, same_site):
+    """
+    Check whether following the historical redirect ``step`` would cross a
+    caller-configured boundary.
+
+    Returns ``'time'`` for a ``historical_redirect_window`` violation,
+    ``'site'`` for a ``same_site`` violation, or ``None`` when no boundary is
+    crossed. Only historical (memento) redirects are checked; service-level
+    snapshot adjustments are governed by ``target_window`` instead.
+    """
+    if (
+        historical_redirect_window is not None
+        and step.target_timestamp is not None
+        and abs(step.target_timestamp - original_date).total_seconds() > historical_redirect_window
+    ):
+        return 'time'
+    if same_site and site_key(step.url) != site_key(step.target_url):
+        return 'site'
+    return None
 
 
 def detect_view_mode_redirect(response, current_date):
@@ -828,6 +903,8 @@ class WaybackClient(_utils.DepthCountedContext):
         exact_redirects=None,
         target_window=timedelta(hours=24),
         follow_redirects=True,
+        historical_redirect_window=None,
+        same_site=False,
         # Deprecated Parameters
         datetime=None,
     ):
@@ -894,12 +971,42 @@ class WaybackClient(_utils.DepthCountedContext):
             ``http://example.com/b``, then this method returns the memento for
             ``/a`` when ``follow_redirects=False`` and the memento for ``/b``
             when ``follow_redirects=True``.
+        historical_redirect_window : int or datetime.timedelta, optional
+            An upper bound on how far the capture of a historical redirect's
+            target may be from the originally requested time, in seconds if an
+            integer. Unlike ``target_window``, this only constrains redirects
+            that the archived website itself returned (not service-level
+            adjustments between snapshots). If following the next historical
+            redirect would exceed the window, playback stops and a
+            :class:`wayback.exceptions.MementoRedirectBoundaryError` is raised
+            with the mementos and navigation steps already gathered, rather
+            than silently continuing to a much later or present-day page.
+            Unset by default, so no additional limit is applied.
+        same_site : boolean, default: False
+            If true, do not follow a historical redirect whose target is on a
+            different site from the URL that issued the redirect. The protocol
+            and any ``www.`` prefix are ignored when comparing sites. When a
+            cross-site redirect is encountered, playback stops and a
+            :class:`wayback.exceptions.MementoRedirectBoundaryError` is raised
+            with the evidence gathered so far, rather than silently following
+            the redirect off-site.
 
         Returns
         -------
         Memento
             A :class:`Memento` object with information about the archived HTTP
-            response.
+            response. Its :attr:`Memento.navigation` attribute lists every
+            redirect followed, separating service-level snapshot adjustments
+            from historical redirects and preserving the capture timestamp and
+            original target URL of each step.
+
+        Raises
+        ------
+        wayback.exceptions.MementoRedirectBoundaryError
+            If following a historical redirect would exceed
+            ``historical_redirect_window`` or cross to another site when
+            ``same_site=True``. The exception retains the memento and
+            navigation history obtained up to that point.
         """
         if datetime:
             warn(
@@ -913,6 +1020,9 @@ class WaybackClient(_utils.DepthCountedContext):
 
         if isinstance(target_window, timedelta):
             target_window = target_window.total_seconds()
+
+        if isinstance(historical_redirect_window, timedelta):
+            historical_redirect_window = historical_redirect_window.total_seconds()
 
         if exact_redirects is None:
             exact_redirects = exact
@@ -973,11 +1083,11 @@ class WaybackClient(_utils.DepthCountedContext):
         #            Wayback will redirect to captures *months* away).
         history = []
         debug_history = []
+        navigation = []
         urls = set()
         previous_was_memento = False
 
         response = self.session.request('GET', url, allow_redirects=False)
-        protocol_and_www = re.compile(r'^https?://(www\d?\.)?')
         memento = None
         while True:
             current_url, current_date, current_mode = _utils.memento_url_data(response.url)
@@ -1015,6 +1125,7 @@ class WaybackClient(_utils.DepthCountedContext):
                     links=links,
                     history=history,
                     debug_history=debug_history,
+                    navigation=navigation,
                 )
                 if not follow_redirects:
                     break
@@ -1053,8 +1164,8 @@ class WaybackClient(_utils.DepthCountedContext):
                             # do a search in the middle of this series of
                             # memento lookups), so just do a loose URL
                             # check for now.
-                            current_nice_url = protocol_and_www.sub('', current_url).casefold()
-                            target_nice_url = protocol_and_www.sub('', target_url).casefold()
+                            current_nice_url = PROTOCOL_AND_WWW.sub('', current_url).casefold()
+                            target_nice_url = PROTOCOL_AND_WWW.sub('', target_url).casefold()
                             playable = current_nice_url == target_nice_url
                         else:
                             playable = True
@@ -1089,6 +1200,34 @@ class WaybackClient(_utils.DepthCountedContext):
                         raise MementoPlaybackError(f'{response.status_code} error while loading memento at {url}')
 
             if response.next:
+                step = build_redirect_step(response, current_url, current_date, is_memento)
+
+                # Caller-configured time-drift and cross-site limits only
+                # apply to historical (memento) redirects. Service-level
+                # snapshot adjustments are bounded by the exactness and
+                # `target_window` checks above. Stop and hand back the
+                # evidence so far instead of silently following to a much
+                # later or off-site (potentially present-day) page.
+                if is_memento:
+                    boundary = redirect_boundary(step, original_date, historical_redirect_window, same_site)
+                    if boundary is not None:
+                        # Keep the boundary-crossing step itself in the
+                        # evidence handed back to the caller, then stop
+                        # without requesting the redirect's target.
+                        navigation.append(step)
+                        history.append(memento)
+                        read_and_close(response)
+                        raise MementoRedirectBoundaryError(
+                            (
+                                f'Refusing to follow the historical redirect from {step.url} to '
+                                f'{step.target_url}, because it crossed the configured {boundary} boundary.'
+                            ),
+                            memento=memento,
+                            history=history,
+                            navigation=navigation,
+                            boundary=boundary,
+                        )
+
                 previous_was_memento = is_memento
                 read_and_close(response)
 
@@ -1097,9 +1236,12 @@ class WaybackClient(_utils.DepthCountedContext):
                 if response.next.url in urls:
                     raise MementoPlaybackError(f'Memento at {url} is circular')
 
-                # All requests are included in `debug_history`, but
-                # `history` only shows redirects that were mementos.
+                # Record every navigation step. `debug_history` lists all
+                # the Wayback URLs, `history` only keeps memento redirects,
+                # and `navigation` keeps structured steps that distinguish
+                # service adjustments from historical redirects.
                 debug_history.append(response.url)
+                navigation.append(step)
                 if is_memento:
                     history.append(memento)
                 response = self.session.send(response.next, allow_redirects=False)

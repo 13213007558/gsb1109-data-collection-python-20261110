@@ -5,6 +5,8 @@ from ._utils import memento_url_data, RateLimit  # noqa
 from ._models import (  # noqa
     CdxRecord,
     Memento,
+    RedirectStep,
+    RedirectType,
 )
 
 from ._client import (  # noqa

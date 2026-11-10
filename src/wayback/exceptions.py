@@ -52,6 +52,43 @@ class NoMementoError(MementoPlaybackError):
     """
 
 
+class MementoRedirectBoundaryError(MementoPlaybackError):
+    """
+    Raised when following a chain of historical redirects would cross a
+    caller-configured boundary (i.e. the ``historical_redirect_window`` or
+    ``same_site`` parameters of :meth:`wayback.WaybackClient.get_memento`).
+
+    Unlike :class:`MementoPlaybackError`, this is raised *after* some evidence
+    has already been gathered, and that evidence is retained on the exception:
+
+    Attributes
+    ----------
+    memento : wayback.Memento or None
+        The last memento that was successfully loaded before the boundary was
+        crossed. This may be a memento of an HTTP redirect (i.e. a 3xx
+        status) whose target was not followed. It is ``None`` only if no
+        memento could be loaded at all.
+    history : tuple[wayback.Memento]
+        The historical (memento) redirects followed before the boundary was
+        reached, in order. Equivalent to the ``history`` attribute of
+        ``memento`` when a memento was loaded.
+    navigation : tuple[wayback.RedirectStep]
+        Every navigation step observed before the boundary was reached, in
+        order, including both service-level snapshot adjustments and
+        historical redirects.
+    boundary : str
+        Which boundary was crossed: ``'time'`` for
+        ``historical_redirect_window`` or ``'site'`` for ``same_site``.
+    """
+
+    def __init__(self, message, *, memento, history, navigation, boundary):
+        self.memento = memento
+        self.history = tuple(history)
+        self.navigation = tuple(navigation)
+        self.boundary = boundary
+        super().__init__(message)
+
+
 class WaybackRetryError(WaybackException):
     """
     Raised when a request to the Wayback Machine has been retried and failed

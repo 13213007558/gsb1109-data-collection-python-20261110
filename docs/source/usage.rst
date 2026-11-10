@@ -116,6 +116,53 @@ We picked up a couple additional occurrences that the original count missed.
    __cassette.__exit__()
 
 
+Understanding redirects while loading a memento
+------------------------------------------------
+
+Loading a memento can involve several redirects, and not all of them mean the
+same thing. Some are issued by the Wayback Machine itself, for example to swap
+in the closest available snapshot when the exact one does not exist. Others are
+the archived website's *own* historical redirects -- the 301/302 responses its
+server returned at crawl time.
+
+The :attr:`wayback.Memento.navigation` attribute lists every redirect as a
+:class:`wayback.RedirectStep`, with these two kinds separated via
+:class:`wayback.RedirectType`. Each step keeps the real capture timestamp and
+the original target URL, so you can reconstruct and explain the full path:
+
+.. code-block:: python
+
+   memento = client.get_memento('http://epa.gov/climatechange', '20200201020357')
+   for step in memento.navigation:
+       print(step.type.value, step.url, '->', step.target_url, step.timestamp)
+
+You can also constrain how far historical redirects are followed. Use
+``historical_redirect_window`` to limit how far a target's capture time may
+drift from the requested time, and ``same_site=True`` to refuse redirects that
+leave the original site (protocol and any ``www.`` prefix are ignored):
+
+.. code-block:: python
+
+   from wayback.exceptions import MementoRedirectBoundaryError
+
+   try:
+       memento = client.get_memento(
+           url, timestamp,
+           historical_redirect_window=timedelta(hours=12),
+           same_site=True,
+       )
+   except MementoRedirectBoundaryError as error:
+       # Playback stopped rather than silently continuing to a much later or
+       # off-site page. The evidence gathered so far is retained on the error.
+       print('Stopped at boundary:', error.boundary)
+       memento = error.memento
+       for step in error.navigation:
+           print(step.type.value, step.url, '->', step.target_url)
+
+Service-level snapshot adjustments are not limited by these settings; they
+continue to be governed by ``exact`` and ``target_window``.
+
+
 API Documentation
 =================
 
@@ -134,6 +181,10 @@ Memento API. We implement a Python client that can speak both.
 
     .. automethod:: close
     .. automethod:: parse_memento_headers
+
+.. autoclass:: wayback.RedirectStep
+
+.. autoclass:: wayback.RedirectType
 
 .. autoclass:: wayback.WaybackSession
 
@@ -160,6 +211,8 @@ Exception Classes
 .. autoclass:: wayback.exceptions.BlockedSiteError
 
 .. autoclass:: wayback.exceptions.MementoPlaybackError
+
+.. autoclass:: wayback.exceptions.MementoRedirectBoundaryError
 
 .. autoclass:: wayback.exceptions.NoMementoError
 

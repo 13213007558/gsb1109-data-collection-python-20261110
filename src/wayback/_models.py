@@ -60,6 +60,111 @@ class Mode(Enum):
     image = 'im_'
 
 
+class RedirectType(Enum):
+    """
+    The kind of navigation step represented by a :class:`RedirectStep`.
+
+    Playing back a memento can involve two very different kinds of redirect,
+    which are otherwise hard to tell apart:
+
+    .. py:attribute:: service
+
+        A redirect issued by the Wayback Machine itself, rather than by the
+        archived website. For example, Wayback redirects to the closest-in-time
+        capture when the requested snapshot does not exist, or normalizes the
+        URL of a capture. The response for a service redirect has no
+        ``Memento-Datetime`` header and does not reproduce a historical HTTP
+        response.
+
+    .. py:attribute:: historical
+
+        A redirect that the captured web server returned at crawl time (e.g. a
+        historical 301 or 302). The response is itself a memento (it has a
+        ``Memento-Datetime`` header), and its ``Location`` header is the URL
+        the original site redirected visitors to.
+    """
+
+    service = 'service'
+    historical = 'historical'
+
+
+class RedirectStep(NamedTuple):
+    """
+    One step in the navigation history of a played-back memento.
+
+    Each step records a single HTTP redirect that was observed while loading
+    a memento. Steps cover both kinds of redirects (see :class:`RedirectType`),
+    and every step preserves the real capture time and the original target URL
+    of the redirect, so a full redirect chain can be reconstructed and
+    interpreted later.
+
+    .. py:attribute:: type
+       :type: wayback.RedirectType
+
+       Whether this was a service-level snapshot adjustment
+       (:attr:`RedirectType.service`) or a redirect from the historical
+       response itself (:attr:`RedirectType.historical`).
+
+    .. py:attribute:: memento_url
+       :type: str
+
+       The absolute Wayback "memento URL" that issued the redirect, e.g.
+       ``https://web.archive.org/web/20200201020357id_/http://epa.gov/climatechange``.
+
+    .. py:attribute:: url
+       :type: str
+
+       The original (non-Wayback) URL that the issuing response was a capture
+       of, e.g. ``http://epa.gov/climatechange``. For service redirects this
+       is the URL embedded in the requested memento URL, not a URL that ever
+       returned its own historical response.
+
+    .. py:attribute:: timestamp
+       :type: datetime.datetime
+
+       The capture timestamp embedded in the issuing memento URL, in UTC. For a
+       service redirect this may be the requested time rather than the time of
+       an actual capture; for a historical redirect it is the real capture
+       time of the redirect response.
+
+    .. py:attribute:: status_code
+       :type: int
+
+       The HTTP status code of the redirect response (e.g. 301 or 302).
+
+    .. py:attribute:: target_memento_url
+       :type: str
+
+       The absolute Wayback URL the redirect pointed at (i.e. the next request
+       that would be made).
+
+    .. py:attribute:: target_url
+       :type: str
+
+       The original (non-Wayback) URL that the redirect ultimately targeted.
+       For a historical redirect, this is the URL the captured web server asked
+       browsers to go to (its historical ``Location``). For a service redirect,
+       it is the URL of the capture Wayback is switching to.
+
+    .. py:attribute:: target_timestamp
+       :type: datetime.datetime or None
+
+       The capture timestamp embedded in :attr:`target_memento_url`, in UTC.
+       This is the real capture time of the next snapshot when it is present.
+       It is ``None`` if the target URL did not embed a timestamp (e.g. a
+       timegate URL with no specific capture).
+    """
+
+    type: RedirectType
+    memento_url: str
+    url: str
+    timestamp: datetime
+    status_code: int
+    target_memento_url: str
+    target_url: str
+    target_timestamp: Optional[datetime]
+
+
 class CdxRecord(NamedTuple):
     """
     Represents an entry from Wayback's "CDX" index of mementos (archived HTTP
@@ -270,12 +375,27 @@ class Memento:
     .. py:attribute:: debug_history
         :type: tuple[str]
 
-        List of all URLs redirects followed in order to produce this memento.
-        These are "memento URLs" -- that is, they are absolute URLs to the
-        Wayback machine like
+        List of the Wayback URLs of every redirect followed in order to produce
+        this memento. These are "memento URLs" -- that is, they are absolute
+        URLs to the Wayback machine like
         ``https://web.archive.org/web/20180816111911id_/http://www.noaa.gov/``,
         rather than URLs of captured redirects, like ``http://www.noaa.gov``.
         Many of the URLs in this list do not represent actual mementos.
+
+        For more detail about each redirect (including whether it came from the
+        Wayback Machine or the archived site), see :attr:`navigation`.
+
+    .. py:attribute:: navigation
+        :type: tuple[wayback.RedirectStep]
+
+        Every redirect followed in order to produce this memento, with the
+        service-level snapshot adjustments (see
+        :attr:`wayback.RedirectType.service`) and historical redirects from the
+        archived site (see :attr:`wayback.RedirectType.historical`) clearly
+        separated. Each :class:`wayback.RedirectStep` preserves the real capture
+        timestamp and the original target URL of its redirect. The memento URLs
+        in :attr:`debug_history` are the :attr:`~wayback.RedirectStep.memento_url`
+        values of these steps, in the same order.
 
     .. py:attribute:: status_code
         :type: int
@@ -392,6 +512,7 @@ class Memento:
         links,
         history,
         debug_history,
+        navigation=(),
     ):
         self.url = url
         self.timestamp = timestamp
@@ -407,6 +528,7 @@ class Memento:
         # Ensure we have non-mutable copies of history info.
         self.history = tuple(history)
         self.debug_history = tuple(debug_history)
+        self.navigation = tuple(navigation)
 
     @property
     def ok(self):
