@@ -1,6 +1,16 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+---------------
+(unreleased)
+
+* Added ``migrate_fifo_disk_to_sqlite()``, an offline, resumable migration
+  from ``FifoDiskQueue`` to ``FifoSQLiteQueue`` that preserves the original
+  item bytes and FIFO order, rejects non-empty target queues, aborts when the
+  source queue changes during the migration, and verifies the result by fully
+  consuming a copy of the target
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

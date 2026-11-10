@@ -161,6 +161,35 @@ used, and leaves the queue open and usable::
 ``PriorityQueue`` and ``RoundRobinQueue`` also close their internal queues, the
 same way that ``pop()`` does when one of them becomes empty.
 
+Migrating from FifoDiskQueue to FifoSQLiteQueue
+================================================
+
+``migrate_fifo_disk_to_sqlite()`` performs an offline, one-task migration of a
+``FifoDiskQueue`` directory into a ``FifoSQLiteQueue`` file::
+
+    from queuelib import migrate_fifo_disk_to_sqlite
+
+    result = migrate_fifo_disk_to_sqlite("queue-dir", "queue.sqlite3")
+    print(result.item_count, result.byte_count, result.order_check_passed)
+
+The source queue is only read, never popped or deleted, and stays usable until
+the migration is confirmed. Every item keeps its original bytes and its FIFO
+dequeue order, including queues that span several chunk files and empty queues.
+
+The migration is resumable: progress is written to a JSON state file
+(``queue.sqlite3.migration.json`` by default, configurable with
+``state_path``), so running it again after an interruption continues where it
+stopped without duplicating items. A target that already contains items is
+rejected, so the queues of different tasks can never be mixed.
+
+A content snapshot of the source is taken at the start and rechecked on every
+run and before success. If the source changes while a migration is in progress,
+the run fails with ``SourceQueueChanged`` and never reports success. Before
+returning, the source is scanned independently and a throwaway copy of the
+target is fully consumed with ``pop()``; both sequences must hash identically,
+otherwise ``MigrationError`` is raised. The returned ``MigrationResult``
+reports the total item count, byte count, digest and the order check outcome.
+
 Disk persistence
 ================
 
