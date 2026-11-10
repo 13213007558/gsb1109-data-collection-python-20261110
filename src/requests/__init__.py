@@ -183,6 +183,7 @@ from .exceptions import (
 )
 from .models import PreparedRequest, Request, Response
 from .sessions import Session, session
+from .sse import ServerSentEvent, SSEClient
 from .status_codes import codes
 
 __all__ = (
@@ -195,6 +196,8 @@ __all__ = (
     "Request",
     "RequestException",
     "Response",
+    "SSEClient",
+    "ServerSentEvent",
     "Session",
     "Timeout",
     "TooManyRedirects",
