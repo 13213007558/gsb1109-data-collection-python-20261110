@@ -5,6 +5,19 @@ Release History
 In Development
 --------------
 
+- Added a deterministic memento selection strategy. A new
+  :meth:`wayback.WaybackClient.get_memento_near` method (and the supporting
+  :class:`wayback.Direction`, :class:`wayback.MementoCriteria`,
+  :class:`wayback.RejectionReason`, :func:`wayback.rank_mementos`, and
+  :func:`wayback.select_memento` helpers) picks the closest capture to a
+  target time while filtering by allowed time direction, maximum distance,
+  status code, media type, and an optional payload predicate. Equal-distance
+  ties resolve with a stable rule (exact match, then the earlier capture),
+  restrictions are never relaxed into the future, failures explain which
+  restriction excluded each candidate via
+  :class:`wayback.exceptions.NoCompatibleMementoError`, and the timestamp of
+  the memento actually played back is verified separately from the CDX query.
+
 - Added a “funding” link to the project’s PyPI listing. You can donate to EDGI’s work (including this project) at https://envirodatagov.org/donate/. (:issue:`222`)
 
 

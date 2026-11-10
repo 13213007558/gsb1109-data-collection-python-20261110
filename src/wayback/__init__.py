@@ -12,3 +12,15 @@ from ._client import (  # noqa
     WaybackClient,
     WaybackSession,
 )
+
+from ._selection import (  # noqa
+    Direction,
+    MementoCriteria,
+    RejectionReason,
+    TimeRelation,
+    build_criteria,
+    rank_mementos,
+    select_memento,
+)
+
+from .exceptions import NoCompatibleMementoError  # noqa

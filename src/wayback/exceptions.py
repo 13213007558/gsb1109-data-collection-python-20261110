@@ -52,6 +52,39 @@ class NoMementoError(MementoPlaybackError):
     """
 
 
+class NoCompatibleMementoError(MementoPlaybackError):
+    """
+    Raised when the CDX index has captures of a URL, but none of them satisfy
+    the selection criteria for the requested time (time direction, maximum
+    distance, status code, media type, or payload requirement).
+
+    Unlike :class:`NoMementoError`, this does not mean the URL was never
+    archived -- it means that every available candidate was excluded by an
+    explicit restriction. Restrictions are never relaxed automatically (for
+    example, a capture in the future is not returned when only past captures
+    were requested).
+
+    Attributes
+    ----------
+    target : datetime.datetime
+        The requested target time.
+    url : str, optional
+        The URL that was queried, when known.
+    rejections : list of tuple(str, str)
+        Each entry is ``(candidate_label, reason)`` where ``reason`` is the
+        value of a :class:`wayback._selection.RejectionReason`, identifying
+        which category of restriction excluded that candidate.
+    """
+
+    def __init__(self, message, target=None, url=None, rejections=None):
+        self.target = target
+        self.url = url
+        # Keep an independent copy so later mutation of the caller's list
+        # cannot change the exception.
+        self.rejections = list(rejections or [])
+        super().__init__(message)
+
+
 class WaybackRetryError(WaybackException):
     """
     Raised when a request to the Wayback Machine has been retried and failed

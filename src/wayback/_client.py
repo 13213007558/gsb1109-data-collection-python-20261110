@@ -34,12 +34,23 @@ from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutEr
 from warnings import warn
 from . import _utils, __version__
 from ._models import CdxRecord, Memento, Mode
+from ._selection import (
+    Direction,
+    RejectionReason,
+    TimeRelation,
+    build_criteria,
+    format_no_compatible_message,
+    label_record,
+    rank_mementos,
+    time_relation,
+)
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
     BlockedByRobotsError,
     BlockedSiteError,
     MementoPlaybackError,
+    NoCompatibleMementoError,
     NoMementoError,
     WaybackRetryError,
     RateLimitError,
@@ -89,6 +100,32 @@ def is_malformed_url(url):
 
 def is_memento_response(response):
     return 'Memento-Datetime' in response.headers
+
+
+def verify_played_time(played_date, target, criteria, max_distance=None):
+    """
+    Check the timestamp of the memento that was actually played back against
+    the requested target time and selection criteria.
+
+    CDX metadata describes what *should* exist, but the Wayback Machine can
+    redirect a memento request to a different (sometimes months-distant)
+    capture. This independently validates the served capture's time.
+
+    Returns
+    -------
+    RejectionReason or None
+        A :class:`wayback._selection.RejectionReason` if the played-back
+        timestamp violates the time direction or maximum distance, otherwise
+        ``None``.
+    """
+    relation = time_relation(played_date, target)
+    if criteria.direction == Direction.before and relation == TimeRelation.after:
+        return RejectionReason.timestamp_mismatch
+    if criteria.direction == Direction.after and relation == TimeRelation.before:
+        return RejectionReason.timestamp_mismatch
+    if max_distance is not None and abs(played_date - target) > max_distance:
+        return RejectionReason.timestamp_mismatch
+    return None
 
 
 def cdx_hash(content):
@@ -1107,3 +1144,156 @@ class WaybackClient(_utils.DepthCountedContext):
                 break
 
         return memento
+
+    def get_memento_near(
+        self,
+        url,
+        target,
+        *,
+        direction=Direction.nearest,
+        allowed_status=None,
+        media_types=None,
+        payload=None,
+        max_distance=None,
+        mode=Mode.original,
+        follow_redirects=True,
+    ):
+        """
+        Select and fetch the memento closest to ``target`` that satisfies an
+        explicit set of quality restrictions.
+
+        A naive "closest snapshot" request often plays back a redirect, login
+        or interstitial page, or an error capture rather than usable content.
+        This method makes the choice deterministic by first evaluating the CDX
+        candidates against the requested time direction, maximum distance,
+        status code, media type, and an optional payload predicate, then
+        verifying the timestamp of the memento that is actually played back.
+
+        Restrictions are never relaxed: when no candidate is acceptable, this
+        raises :class:`wayback.exceptions.NoCompatibleMementoError` explaining
+        which category of restriction excluded every candidate, rather than
+        silently substituting a capture from a disallowed direction (e.g. a
+        future capture when only past captures were requested).
+
+        Parameters
+        ----------
+        url : str
+            The URL to retrieve a memento of.
+        target : datetime.datetime or datetime.date or str
+            The desired point in time. Naive datetimes are treated as UTC.
+        direction : wayback.Direction or str, default: Direction.nearest
+            Allowed temporal relation to ``target``: ``'nearest'`` (either
+            side), ``'before'`` (at or before the target), or ``'after'`` (at
+            or after the target).
+        allowed_status : int or iterable of int, optional
+            Acceptable capture status code(s), e.g. ``200`` or
+            ``(200, 203)``. Captures with any other status (including
+            redirects and login/error responses) are rejected.
+        media_types : str or iterable of str, optional
+            Acceptable media types. Supports exact values (``'text/html'``),
+            type wildcards (``'text/*'``), and ``'*'``. Comparison ignores
+            case and parameters (``'text/html; charset=utf-8'`` matches
+            ``'text/html'``).
+        payload : callable, optional
+            A predicate taking a :class:`wayback.CdxRecord` and returning a
+            boolean. It can enforce metadata-level payload requirements such
+            as a minimum ``length`` or a specific ``digest``. Records for
+            which it returns false are rejected.
+        max_distance : datetime.timedelta, optional
+            Maximum acceptable distance between the capture and the target.
+            When provided, the CDX search is also bounded to this window so
+            no candidate outside it is even considered.
+        mode : wayback.Mode or str, default: wayback.Mode.original
+            Playback mode passed through to :meth:`get_memento`.
+        follow_redirects : boolean, default: True
+            Whether to follow historical redirects when playing back the
+            chosen capture.
+
+        Returns
+        -------
+        Memento
+            The playable memento for the best acceptable candidate. Its
+            timestamp has been verified to satisfy ``direction`` and
+            ``max_distance``.
+
+        Raises
+        ------
+        wayback.exceptions.NoCompatibleMementoError
+            If no candidate satisfies the criteria, or every acceptable
+            candidate failed playback / had a mismatching playback timestamp.
+            The exception's ``rejections`` attribute lists the restriction
+            category for each excluded candidate.
+        """
+        target = _utils.ensure_utc_datetime(target)
+        criteria = build_criteria(direction, allowed_status, media_types, payload)
+
+        # When no maximum distance is supplied, give get_memento a generous
+        # window so its own 24-hour default does not reject a capture before
+        # we can verify it; verify_played_time() remains the single source of
+        # truth for the direction/distance rules below.
+        playback_window = max_distance if max_distance is not None else timedelta(days=36500)
+
+        # Bound the CDX search to the window implied by the direction and
+        # maximum distance so the server does the cheap temporal filtering
+        # and we never treat an out-of-window capture as a candidate.
+        search_bounds = {}
+        if max_distance is not None:
+            if criteria.direction == Direction.before:
+                search_bounds['from_date'] = target - max_distance
+                search_bounds['to_date'] = target
+            elif criteria.direction == Direction.after:
+                search_bounds['from_date'] = target
+                search_bounds['to_date'] = target + max_distance
+            else:
+                search_bounds['from_date'] = target - max_distance
+                search_bounds['to_date'] = target + max_distance
+
+        records = list(self.search(url, **search_bounds))
+        eligible, rejected = rank_mementos(records, target, criteria, max_distance)
+        if not eligible:
+            rejection_pairs = [(label_record(record), reason.value) for record, reason in rejected]
+            raise NoCompatibleMementoError(
+                format_no_compatible_message(url, target, rejection_pairs),
+                target=target,
+                url=url,
+                rejections=rejection_pairs,
+            )
+
+        playback_rejections = []
+        for selection in eligible:
+            try:
+                # exact=False lets Wayback redirect a missing/unplayable
+                # capture to its closest alternative; we then verify the
+                # timestamp of whatever was actually served.
+                memento = self.get_memento(
+                    selection.record,
+                    mode=mode,
+                    exact=False,
+                    target_window=playback_window,
+                    follow_redirects=follow_redirects,
+                )
+            except MementoPlaybackError as error:
+                logger.debug('candidate %s could not be played back: %s', selection.record.timestamp, error)
+                playback_rejections.append((label_record(selection.record), RejectionReason.playback.value))
+                continue
+
+            # Independently verify the time of the memento that was actually
+            # served. Wayback may redirect a request to a different capture;
+            # its timestamp must still obey the requested direction/window.
+            mismatch = verify_played_time(memento.timestamp, target, criteria, max_distance)
+            if mismatch is not None:
+                playback_rejections.append((label_record(selection.record), mismatch.value))
+                memento.close()
+                continue
+
+            return memento
+
+        all_rejections = [
+            (label_record(record), reason.value) for record, reason in rejected
+        ] + playback_rejections
+        raise NoCompatibleMementoError(
+            format_no_compatible_message(url, target, all_rejections),
+            target=target,
+            url=url,
+            rejections=all_rejections,
+        )

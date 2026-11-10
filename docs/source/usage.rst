@@ -127,6 +127,7 @@ Memento API. We implement a Python client that can speak both.
 
     .. automethod:: search
     .. automethod:: get_memento
+    .. automethod:: get_memento_near
 
 .. autoclass:: wayback.CdxRecord
 
@@ -138,6 +139,27 @@ Memento API. We implement a Python client that can speak both.
 .. autoclass:: wayback.WaybackSession
 
     .. automethod:: reset
+
+Memento Selection
+-----------------
+
+These helpers implement the deterministic selection strategy behind
+:meth:`wayback.WaybackClient.get_memento_near`. They operate purely on CDX
+metadata, so they can be used without fetching any memento content.
+
+.. autoclass:: wayback.Direction
+
+.. autoclass:: wayback.TimeRelation
+
+.. autoclass:: wayback.RejectionReason
+
+.. autoclass:: wayback.MementoCriteria
+
+.. autofunction:: wayback.build_criteria
+
+.. autofunction:: wayback.rank_mementos
+
+.. autofunction:: wayback.select_memento
 
 Utilities
 ---------
@@ -162,6 +184,8 @@ Exception Classes
 .. autoclass:: wayback.exceptions.MementoPlaybackError
 
 .. autoclass:: wayback.exceptions.NoMementoError
+
+.. autoclass:: wayback.exceptions.NoCompatibleMementoError
 
 .. autoclass:: wayback.exceptions.RateLimitError
 
