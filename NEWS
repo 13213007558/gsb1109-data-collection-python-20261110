@@ -3,6 +3,18 @@
 History
 -------
 
+1.13.0 (unreleased)
+~~~~~~~~~~~~~~~~~~~
+
+* Added ``Selector.css_match_explanation()`` and
+  ``SelectorList.css_match_explanation()`` to explain why a CSS selector
+  matches a given node or why it does not. The explanation reports the node's
+  own conditions, its ancestor and sibling relationships, and its positional
+  conditions separately, explains each branch of a selector list
+  independently, and names every missing requirement. It only accepts syntax
+  supported by the CSS engine, raising ``parsel.cssmatch.UnsupportedSelectorSyntax``
+  otherwise, and never modifies the document.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 

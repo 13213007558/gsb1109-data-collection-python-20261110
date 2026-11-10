@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from parsel import Selector
+
+if TYPE_CHECKING:
+    from parsel.cssmatch import MatchExplanation
 
 
 def correct() -> None:
@@ -16,6 +20,14 @@ def correct() -> None:
     xpath_values: list[str] = selector.xpath(
         "//somens:a/text()", namespaces={"somens": "http://scrapy.org"}
     ).extract()
+
+    explanation: MatchExplanation = selector.css("li")[0].css_match_explanation(
+        "li:first-child"
+    )
+    explanations: list[MatchExplanation] = selector.css(
+        "li"
+    ).css_match_explanation("li")
+    assert explanation.matched or not explanations
 
     class MySelector(Selector):
         def my_own_func(self) -> int:

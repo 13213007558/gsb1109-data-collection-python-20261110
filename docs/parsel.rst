@@ -1,6 +1,15 @@
 API reference
 =============
 
+parsel.cssmatch
+---------------
+
+.. automodule:: parsel.cssmatch
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+
 parsel.csstranslator
 --------------------
 

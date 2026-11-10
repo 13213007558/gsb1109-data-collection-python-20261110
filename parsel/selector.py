@@ -24,6 +24,7 @@ from typing import (
 import jmespath
 from lxml import etree, html
 
+from .cssmatch import MatchExplanation, explain_css_match
 from .csstranslator import GenericTranslator, HTMLTranslator
 from .utils import extract_regex, flatten, iflatten, shorten
 
@@ -251,6 +252,15 @@ class SelectorList(list[_SelectorType]):
         ``query`` is the same argument as the one in :meth:`Selector.css`
         """
         return self.__class__(flatten([x.css(query) for x in self]))
+
+    def css_match_explanation(self, query: str) -> list[MatchExplanation]:
+        """
+        Call :meth:`Selector.css_match_explanation` for each element in this
+        list and return the explanations in the same order.
+
+        ``query`` is the same argument as the one in :meth:`Selector.css`.
+        """
+        return [x.css_match_explanation(query) for x in self]
 
     def re(self, regex: str | Pattern[str], replace_entities: bool = True) -> list[str]:
         """
@@ -827,6 +837,46 @@ class Selector:
     def _css2xpath(self, query: str) -> str:
         type_ = _xml_or_html(self.type)
         return _ctgroup[type_]["_csstranslator"].css_to_xpath(query)
+
+    def css_match_explanation(self, query: str) -> MatchExplanation:
+        """Explain why the CSS *query* matches this selector's node, or not.
+
+        Unlike :meth:`css`, which returns the nodes matched in the whole
+        subtree, this method checks the single node wrapped by this selector
+        against *query* and reports each requirement separately:
+
+        * the node's own conditions (type, id, classes, attributes,
+          pseudo-classes),
+        * ancestor and sibling relationships expressed by combinators,
+        * positional conditions such as ``:nth-child()``.
+
+        Each branch of a comma-separated selector list is explained on its
+        own, and the returned object names every necessary relationship or
+        condition that is missing. The document is only read: it is not
+        modified and no scripts are evaluated.
+
+        Only CSS syntax supported by the engine backing :meth:`css` is
+        accepted. Unsupported syntax raises
+        :class:`~parsel.cssmatch.UnsupportedSelectorSyntax` instead of
+        guessing a conclusion.
+
+        .. versionadded:: 1.13.0
+        """
+        if self.type not in ("html", "xml", "text"):
+            raise ValueError(
+                f"Cannot use css_match_explanation on a Selector of type {self.type!r}"
+            )
+        if not isinstance(self.root, etree._Element):
+            raise ValueError(
+                "css_match_explanation() requires an element node; text and "
+                "attribute selectors cannot be explained"
+            )
+        return explain_css_match(
+            query,
+            self.root,
+            document_type=_xml_or_html(self.type),
+            scope=self.root,
+        )
 
     def re(self, regex: str | Pattern[str], replace_entities: bool = True) -> list[str]:
         """

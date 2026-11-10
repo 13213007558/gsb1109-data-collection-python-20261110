@@ -294,6 +294,96 @@ Examples:
     See also: :ref:`extracting-text` and :ref:`selecting-attributes`.
 
 
+.. _topics-selectors-css-explanation:
+
+Explaining why a CSS selector does not match
+--------------------------------------------
+
+Sometimes a node is visibly present in the page, but a CSS query returns an
+empty list. Removing parts of the selector and retrying is tedious. The
+:meth:`~parsel.selector.Selector.css_match_explanation` method tests one
+specific node against a CSS selector and reports every requirement
+separately:
+
+* the node's own conditions (type, id, classes, attributes and
+  pseudo-classes),
+* ancestor and sibling relationships expressed by combinators,
+* positional conditions such as ``:nth-child()``.
+
+Take a page with price nodes and a selector that combines an ancestor chain,
+an adjacent sibling combinator and an ``:nth-child()`` position condition::
+
+    >>> catalog_selector = Selector(text='''
+    ... <html><body>
+    ... <section class="catalog">
+    ...   <ul>
+    ...     <li><span class="price">10</span></li>
+    ...     <li><span class="price">20</span></li>
+    ...     <li><span class="price">30</span></li>
+    ...   </ul>
+    ... </section>
+    ... </body></html>
+    ... ''')
+    >>> css = "section.catalog > ul > li:nth-child(2) + li span.price"
+
+The second price node is not returned, because the element before it is the
+first list item, not the second one::
+
+    >>> node = catalog_selector.css("span.price")[1]
+    >>> explanation = node.css_match_explanation(css)
+    >>> explanation.matched
+    False
+    >>> print(explanation.failure_reasons[0])
+    section.catalog > ul > li:nth-child(2) + li span.price: required adjacent
+    sibling matching 'li:nth-child(2)' is missing: the only candidate adjacent
+    sibling node <li> fails :nth-child(2) (1 element sibling position does not
+    satisfy :nth-child(2))
+
+Each individual requirement is available, split between node, position and
+relationship checks::
+
+    >>> branch = explanation.branches[0]
+    >>> [
+    ...     (check.expression, check.category, check.passed)
+    ...     for compound in branch.compounds
+    ...     for check in compound.checks
+    ...     if not check.passed
+    ... ]
+    [(':nth-child(2)', 'position', False)]
+
+The third price node is the actual match, and every requirement passes::
+
+    >>> witness = catalog_selector.css("span.price")[2].css_match_explanation(css)
+    >>> witness.matched
+    True
+    >>> witness.failure_reasons
+    ()
+
+Each branch of a comma-separated selector list is explained independently in
+:attr:`~parsel.cssmatch.MatchExplanation.branches`. Calling the method on a
+:class:`~parsel.selector.SelectorList` returns one explanation per node::
+
+    >>> [
+    ...     (item.node, item.matched)
+    ...     for item in catalog_selector.css("span.price").css_match_explanation(css)
+    ... ]
+    [('<span>', False), ('<span>', False), ('<span>', True)]
+
+Only CSS syntax supported by the engine backing :meth:`~parsel.selector.Selector.css`
+is accepted. Unsupported syntax raises
+:class:`~parsel.cssmatch.UnsupportedSelectorSyntax` instead of guessing a
+conclusion, and invalid grammar raises the same error as a regular query::
+
+    >>> node.css_match_explanation("span:unknown-pseudo")
+    Traceback (most recent call last):
+    ...
+    parsel.cssmatch.UnsupportedSelectorSyntax: The pseudo-class
+    :unknown-pseudo is not supported by the CSS engine
+
+The explanation only reads the document: it never modifies the page and
+never evaluates any script.
+
+
 .. _CSS Selectors: https://www.w3.org/TR/css3-selectors/#selectors
 
 .. _topics-selectors-nesting-selectors:

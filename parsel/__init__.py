@@ -10,11 +10,13 @@ __all__ = [
     "AbsoluteXPathWarning",
     "Selector",
     "SelectorList",
+    "UnsupportedSelectorSyntax",
     "css2xpath",
     "xpathfuncs",
 ]
 
 from parsel import xpathfuncs
+from parsel.cssmatch import UnsupportedSelectorSyntax
 from parsel.csstranslator import css2xpath
 from parsel.selector import AbsoluteXPathWarning, Selector, SelectorList
 
