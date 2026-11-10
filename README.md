@@ -44,6 +44,8 @@ retrieval:
    - Spam, trackers, and content-types
    - Locales and internationalization
    - Web crawling (frontier, scheduling)
+- Optional crawl-trap monitoring: evidence-backed, reversible restrictions for
+  calendar/filter URL inflation and soft-404 patterns (`courlan.traps`)
 - Data store specifically designed for URLs
 - Usable with Python or on the command-line
 

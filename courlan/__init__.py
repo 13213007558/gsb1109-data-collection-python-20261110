@@ -21,6 +21,20 @@ from .filters import (
     validate_url,
 )
 from .sampling import sample_urls
+from .traps import (
+    CrawlTrapMonitor,
+    FetchResult,
+    ResponseFingerprint,
+    TrapEvidence,
+    TrapMode,
+    TrapRule,
+    TrapSignal,
+    TrapSuggestion,
+    detect_traps,
+    fingerprint_url,
+    is_duplicate_fingerprint,
+    trap_prefix,
+)
 from .urlstore import UrlStore, load_store
 from .urlutils import (
     extract_domain,
@@ -46,6 +60,18 @@ __all__ = [
     "lang_filter",
     "validate_url",
     "sample_urls",
+    "CrawlTrapMonitor",
+    "FetchResult",
+    "ResponseFingerprint",
+    "TrapEvidence",
+    "TrapMode",
+    "TrapRule",
+    "TrapSignal",
+    "TrapSuggestion",
+    "detect_traps",
+    "fingerprint_url",
+    "is_duplicate_fingerprint",
+    "trap_prefix",
     "UrlStore",
     "load_store",
     "extract_domain",

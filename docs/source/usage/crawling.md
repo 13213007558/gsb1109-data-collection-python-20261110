@@ -136,6 +136,75 @@ store.add_urls(list(links))
 `extract_links` also accepts `no_filter`, `trailing_slash`, `with_nav`, `redirects`, and `reference` — see the [API reference](../api/core.md) for details.
 
 
+## Crawl-trap monitoring
+
+A calendar widget or a set of filter checkboxes can combine a few values into
+an unbounded number of distinct URLs that all serve the same page. Ordinary
+deduplication cannot catch this: the URLs really are different.
+`CrawlTrapMonitor` combines three caller-supplied knowledge sources instead:
+
+- discovery relationships — which URLs link to which others,
+- response fingerprints — status code, body hash and text length,
+- access results — what was actually fetched.
+
+It groups URLs into address-space prefixes (trailing date and page numbers are
+folded together) and only emits `TrapSuggestion` objects, each carrying
+`TrapEvidence` with the concrete sample URLs and metrics behind it. A
+suggestion never blocks anything on its own.
+
+### Observe first, enforce later
+
+```python
+from courlan import CrawlTrapMonitor, TrapMode, fingerprint_url
+
+# OBSERVE is the default: evidence and suggestions only
+monitor = CrawlTrapMonitor()
+
+for url, response in fetches:
+    monitor.observe_fingerprint(
+        fingerprint_url(url, response.status, response.body),
+        discovery_links=tuple(extract_links(response.text, url)),
+    )
+
+for suggestion in monitor.evaluate():
+    for evidence in suggestion.evidence:
+        print(evidence.signal.value, evidence.detail, evidence.metrics)
+```
+
+A suggestion needs corroboration across knowledge sources, for example a
+calendar or filter explosion in the discovery graph *and* duplicated response
+bodies. Growing page numbers are only corroborating evidence: a large, finite
+directory with distinct pages is never flagged just for having many page
+numbers, and its protective `FINITE_PAGINATION` evidence is available from
+`evidence_for()`.
+
+### Enabling and lifting a rule
+
+```python
+# review suggestions manually, then accept one
+rule = monitor.accept_suggestion(monitor.suggestions()[0])
+
+# rules only take effect in enforcing mode
+monitor.mode = TrapMode.ENFORCE
+eligible, limited = monitor.filter_limited(candidate_urls)
+
+# a false positive review: disable the rule, candidates recover immediately
+# while the observations and evidence are kept
+monitor.disable_rule(rule.pattern)
+assert not monitor.is_limited(limited[0])
+
+# removing the rule deletes it; re-evaluation can produce a fresh suggestion
+monitor.remove_rule(rule.pattern)
+```
+
+For fire-and-forget operation, `CrawlTrapMonitor(mode=TrapMode.ENFORCE,
+auto_rules=True)` installs rules during `evaluate()`. The one-shot
+`detect_traps()` helper accepts a finite sample of `FetchResult` objects and
+returns suggestions directly, which is convenient for controlled comparisons
+between a suspected trap and a known finite directory. See the
+[API reference](../api/traps.md) for thresholds and the full method list.
+
+
 ## Best practices
 
 | Practice | Reason |

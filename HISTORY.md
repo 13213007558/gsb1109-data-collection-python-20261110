@@ -1,6 +1,16 @@
 # History / Changelog
 
 
+## Unreleased
+
+- New optional `courlan.traps` module: `CrawlTrapMonitor` detects address
+  inflation from calendar/filter combinations and soft-404 patterns using
+  discovery relationships, response fingerprints and access results. It emits
+  evidence-backed `TrapSuggestion` objects and optional, reversible `TrapRule`
+  restrictions; observation mode never limits URLs and finite pagination with
+  distinct content is protected from false positives
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)
