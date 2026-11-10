@@ -79,6 +79,7 @@ getting-started
 usage/python
 usage/urlstore
 usage/crawling
+usage/revisit
 usage/cli
 troubleshooting
 changelog

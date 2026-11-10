@@ -20,6 +20,16 @@ from .filters import (
     lang_filter,
     validate_url,
 )
+from .revisit import (
+    FetchOutcome,
+    OutcomeCategory,
+    RetryAfterError,
+    RevisitDecision,
+    RevisitPolicy,
+    RevisitSchedule,
+    classify_exception,
+    format_timeline,
+)
 from .sampling import sample_urls
 from .urlstore import UrlStore, load_store
 from .urlutils import (
@@ -48,6 +58,14 @@ __all__ = [
     "sample_urls",
     "UrlStore",
     "load_store",
+    "FetchOutcome",
+    "OutcomeCategory",
+    "RevisitDecision",
+    "RevisitPolicy",
+    "RevisitSchedule",
+    "RetryAfterError",
+    "classify_exception",
+    "format_timeline",
     "extract_domain",
     "filter_urls",
     "fix_relative_urls",

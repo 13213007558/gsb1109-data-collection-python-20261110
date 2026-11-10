@@ -43,7 +43,7 @@ retrieval:
 - Heuristics for link filtering
    - Spam, trackers, and content-types
    - Locales and internationalization
-   - Web crawling (frontier, scheduling)
+   - Web crawling (frontier, scheduling, revisit policy)
 - Data store specifically designed for URLs
 - Usable with Python or on the command-line
 
@@ -194,6 +194,30 @@ the path `/path/testpage` within the domain `https://example.org`:
 For the full method reference, optional settings (`compressed`, `language`,
 `strict`, `trailing_slash`, `verbose`), and crawl scheduling see the
 [UrlStore documentation](https://courlan.readthedocs.io/en/latest/api/urlstore.html).
+
+
+## Revisit policy
+
+A 404, a temporary timeout and repeated 429 responses are different outcomes
+and get different revisit plans instead of one generic "unvisited" state.
+`RevisitPolicy` turns an observation (status code, exception category,
+observation time, `Retry-After` hint) into a next-visit time or a pause
+reason, with no real sleeping involved:
+
+``` python
+>>> from datetime import datetime
+>>> from courlan import FetchOutcome, RevisitPolicy
+>>> policy = RevisitPolicy()
+>>> policy.evaluate('https://example.org/a', FetchOutcome(datetime(2026, 11, 10, 8, 0), status_code=404)).delay
+datetime.timedelta(days=1)
+>>> policy.evaluate('https://example.org/a', FetchOutcome(datetime(2026, 11, 10, 8, 0), status_code=429)).delay
+datetime.timedelta(seconds=60)
+```
+
+Per-URL plans are independent across sites, a confirmed success resets the
+failure streak, unknown results never count as success, and a paused URL can
+be reopened manually. See the
+[revisit policy guide](https://courlan.readthedocs.io/en/latest/usage/revisit.html).
 
 
 ## Command-line

@@ -1,6 +1,11 @@
 # History / Changelog
 
 
+## Unreleased
+
+- New `courlan.revisit` module: configurable revisit policy turning fetch observations (status code, exception category, observation time, Retry-After hint) into a next-visit time or a pause reason; per-URL schedules are independent across sites, success resets the failure streak, unknown outcomes never count as success, and manual resume is supported, all without real sleeping
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)
