@@ -13,6 +13,10 @@ Reference
     :members:
     :show-inheritance:
 
+.. automodule:: readability.content_status
+    :members:
+    :show-inheritance:
+
 .. automodule:: readability.debug
     :members:
     :show-inheritance:

@@ -64,6 +64,46 @@ from its test suite. The [quality evaluation](https://github.com/buriy/python-re
 includes the corpus, methodology, complete results, failures, and per-page
 measurements.
 
+## Content status
+
+Paywall and registration pages often still expose a paragraph or two that
+`summary()` extracts, so downstream code must not treat every extraction as the
+full article. `Document.content_status()` describes the completeness state of
+the content actually obtained. It only reads markers present in the page and
+never attempts to bypass an access restriction.
+
+```python
+from readability import Document, ContentStatus
+
+result = Document(page_bytes).content_status()
+result.state            # one of the ContentStatus values below
+result.signals          # every marker observed, including contradictory ones
+result.contradictory_signals
+result.body_text_length  # descriptive only; never used as truncation evidence
+result.as_dict()
+```
+
+| State | Meaning |
+|---|---|
+| `ContentStatus.UNKNOWN` | No explicit marker supports a completeness claim. This never guarantees that the content is complete. |
+| `ContentStatus.PREVIEW` | The page explicitly marks the extracted text as a preview or teaser of content that continues elsewhere. |
+| `ContentStatus.RESTRICTED` | The page explicitly states that access is limited by a paywall, registration wall, or similar restriction. |
+| `ContentStatus.NO_CONTENT` | No article body text could be extracted. |
+
+Detection relies on explicit structural markers only: JSON-LD (`isAccessibleForFree`,
+`paywall`, `contentTier`), microdata, `content_tier`/access-rights meta tags,
+`data-*` access attributes, and access-control vocabulary in element classes or
+IDs. Standardized machine markers and explicit terms such as `paywall` are
+*strong* and decide the state on their own; ambiguous class tokens (`preview`
+cards, `login` navigation, video-caption widgets) and password inputs are *weak*
+signals that are always recorded but only decide the state when no substantial
+body text was extracted.
+
+Consequently, a short body alone is never evidence of truncation, subscription
+promotional copy does not make a page restricted, and when restricted and free
+markers contradict each other all markers are retained on `signals` and the
+state falls back to `unknown`.
+
 ## Security
 
 `Document.summary()` removes common active content while extracting an article,
@@ -73,6 +113,7 @@ allowlist sanitizer and an appropriate Content Security Policy.
 
 ## Change Log
 - 0.9
+  - Added `Document.content_status()` and the `readability.content_status` module to describe whether extracted content is of unknown completeness, an explicit preview, restricted by a paywall or registration wall, or absent. The assessment uses explicit structural markers only, retains every marker including contradictory ones, distinguishes strong machine markers from weak class/id vocabulary, and never treats body length or subscription promotional copy as truncation evidence.
   - Expanded the declared Python range through 3.14, added `lxml` 6 support, and updated packaging metadata for Markdown documentation and current `cssselect` releases.
   - Added `python -m readability` execution for local files and URLs.
   - Fixed bytes input and encoding detection.

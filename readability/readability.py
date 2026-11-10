@@ -15,6 +15,8 @@ from lxml.html import HtmlElement
 
 from .cleaners import clean_attributes
 from .cleaners import html_cleaner
+from .content_status import build_content_status
+from .content_status import collect_structural_signals
 from .htmls import build_doc
 from .htmls import get_body
 from .htmls import get_title
@@ -163,6 +165,7 @@ class Document:
         .short_title() -- cleaned up title
         .content() -- full content
         .summary() -- cleaned up content
+        .content_status() -- completeness state of the extracted content
         """
         self.input = input
         self.html = None
@@ -174,6 +177,9 @@ class Document:
         self.retry_length = retry_length
         self.xpath = xpath
         self.handle_failures = handle_failures
+        self._json_ld_blocks = []
+        self._structural_signals = []
+        self._content_status = None
 
     def _html(self, force=False):
         if force or self.html is None:
@@ -191,6 +197,7 @@ class Document:
             self.encoding = 'utf-8'
         else:
             doc, self.encoding = build_doc(input)
+        self._capture_content_signals(doc)
         for elem in doc.xpath("//*[@hidden]"):
             elem.drop_tree()
         for elem in doc.xpath("//*[@style]"):
@@ -241,6 +248,45 @@ class Document:
         to disable or to improve DOM-to-text conversion in .summary() method
         """
         return clean_attributes(tounicode(self._html(), method="html"))
+
+    def _capture_content_signals(self, doc):
+        """Snapshot paywall markers before cleaning mutates the DOM.
+
+        lxml cleaning removes script blocks and some attributes, so both
+        JSON-LD payloads and structural markers must be recorded up front.
+        """
+        self._json_ld_blocks = [
+            (script.text or "")
+            for script in doc.findall(
+                ".//script[@type='application/ld+json']"
+            )
+        ]
+        self._structural_signals = collect_structural_signals(doc)
+
+    def content_status(self):
+        """Describe the completeness state of the extracted content.
+
+        The assessment uses explicit structural markers only.  It does not
+        attempt to bypass any access restriction and it never guarantees
+        completeness for content that lacks explicit markers; short bodies
+        and subscription promotional copy are not treated as evidence of
+        truncation.
+
+        :returns: a :class:`readability.content_status.ContentStatusResult`
+            whose ``state`` is one of ``unknown``, ``preview``,
+            ``restricted`` or ``no_content``.  All observed markers,
+            including contradictory ones, are kept on ``signals``.
+        """
+        if self._content_status is None:
+            summary_html = self.summary()
+            self._content_status = build_content_status(
+                self._structural_signals,
+                self._json_ld_blocks,
+                summary_html,
+                self.min_text_length,
+                self.retry_length,
+            )
+        return self._content_status
 
     def summary(self, html_partial=False, keep_all_images=False):
         """
