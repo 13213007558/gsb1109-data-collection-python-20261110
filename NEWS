@@ -3,6 +3,18 @@
 History
 -------
 
+1.13.0 (unreleased)
+~~~~~~~~~~~~~~~~~~~
+
+* Added declarative extraction recipes (``parsel.recipe.Recipe``). A recipe
+  is a list of stage mappings that chain supported operations (``xpath``,
+  ``css``, ``jmespath``, ``jsonpath``, ``text``, ``parse_json``,
+  ``parse_html`` and ``field``) across HTML/XML nodes, JSON values and
+  strings. Stages declare how multiple results are combined (``flatten``,
+  ``first`` or ``wrap``), failures are isolated per value and reported with
+  the failing stage and the original input, and records expose missing fields
+  together with the reason. Arbitrary Python expressions are not accepted.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 

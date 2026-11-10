@@ -1328,6 +1328,124 @@ into an XPath expression as a string, which you can use as-is or combine to
 build a more complex expression, before feeding to a function expecting XPath.
 
 
+Declarative extraction recipes
+==============================
+
+Pages often mix formats: product data lives inside a ``<script>`` tag as JSON,
+and some JSON fields themselves contain HTML. Chaining the parsing steps by
+hand means repeating the same glue code in every crawler. A
+:class:`~parsel.recipe.Recipe` describes those steps once, as a list of stage
+mappings, and Parsel wires the stages together across HTML nodes, JSON values
+and plain strings.
+
+A recipe is plain data: each stage names a supported operation in ``op`` and
+its arguments. No Python expressions are evaluated, so recipes are safe to
+load from JSON or YAML configuration::
+
+    >>> from parsel import Recipe
+    >>> page = '''
+    ... <html><body>
+    ... <script id="data">
+    ... {"products": [
+    ...   {"name": "Widget", "info": "<div><p>First product</p></div>"},
+    ...   {"name": "Gadget", "info": "<p>Second product</p>"}
+    ... ]}
+    ... </script>
+    ... <script id="broken">{not valid json</script>
+    ... </body></html>
+    ... '''
+    >>> recipe = Recipe([
+    ...     {"op": "xpath", "query": "//script[@id='data' or @id='broken']/text()"},
+    ...     {"op": "parse_json"},
+    ...     {"op": "jmespath", "query": "products[*]"},
+    ...     {"op": "field", "name": "name",
+    ...      "pipeline": [{"op": "jmespath", "query": "name"}]},
+    ...     {"op": "field", "name": "info", "pipeline": [
+    ...         {"op": "jmespath", "query": "info"},
+    ...         {"op": "parse_html"},
+    ...         {"op": "css", "query": "p::text"},
+    ...         {"op": "text"},
+    ...     ]},
+    ... ])
+    >>> records = recipe.extract(page)
+
+Supported operations
+--------------------
+
+- ``xpath`` and ``css`` select nodes from an HTML/XML selector.
+- ``jmespath`` and ``jsonpath`` select values from JSON data.
+- ``text`` serializes a selector to text. Its ``on_missing`` keyword accepts
+  ``"keep"`` (the default), ``"drop"`` (remove the value) or ``"default"``
+  together with a ``default`` value.
+- ``parse_json`` parses a text value as JSON, and ``parse_html`` parses a text
+  value as HTML (pass ``kwargs={"type": "xml"}`` to parse XML instead).
+- ``field`` runs a nested ``pipeline`` and stores the result in a record field.
+
+Stages that produce several values declare how the values are combined with
+``expand``. ``"flatten"`` (the default) expands each result into separate
+values, ``"first"`` keeps one value, and ``"wrap"`` keeps the whole list as a
+single value. The 1:1 stages (``text``, ``parse_json`` and ``parse_html``)
+always map one value to one value and do not accept ``expand``::
+
+    >>> wrap_recipe = Recipe([
+    ...     {"op": "parse_json"},
+    ...     {"op": "jmespath", "query": "tags", "expand": "wrap"},
+    ... ])
+    >>> wrap_recipe.extract('{"tags": ["a", "b"]}')[0].data["_value"]
+    ['a', 'b']
+
+Records and missing reasons
+---------------------------
+
+Every extracted product is a :class:`~parsel.recipe.Record`. Successful fields
+land in ``data``, fields whose pipeline produced nothing are reported in
+``missing`` with the reason, and stage failures are collected in ``errors``::
+
+    >>> [record.data["name"] for record in records if record.ok]
+    [['Widget'], ['Gadget']]
+    >>> [record.data["info"] for record in records if record.ok]
+    [['First product'], ['Second product']]
+    >>> missing = Recipe([
+    ...     {"op": "parse_json"},
+    ...     {"op": "field", "name": "price",
+    ...      "pipeline": [{"op": "jmespath", "query": "price"}]},
+    ... ]).extract('{"name": "x"}')[0]
+    >>> missing.missing["price"].message
+    'pipeline produced no value'
+
+Failures are isolated per value: one broken ``<script>`` does not make the
+other products disappear. The broken branch becomes its own record whose error
+carries the failing stage, operation, the offending value and the original
+input snapshot::
+
+    >>> broken = next(record for record in records if not record.ok)
+    >>> error = broken.errors[0]
+    >>> error.operation
+    'parse_json'
+    >>> error.stage
+    1
+    >>> error.value
+    '{not valid json'
+    >>> error.origin == page
+    True
+
+:meth:`~parsel.recipe.Recipe.extract_dicts` returns JSON-serializable
+dictionaries, with the missing reasons under the ``_missing`` and ``_errors``
+keys.
+
+Invalid recipes fail fast
+-------------------------
+
+A malformed recipe raises :class:`~parsel.recipe.RecipeError` at construction
+time, before any input is processed, and only the operations listed above are
+accepted::
+
+    >>> Recipe([{"op": "eval", "query": "1"}])
+    Traceback (most recent call last):
+        ...
+    parsel.recipe.RecipeError: Unsupported operation 'eval' at stage 0, ...
+
+
 Similar libraries
 =================
 
