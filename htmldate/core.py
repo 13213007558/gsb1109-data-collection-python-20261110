@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sized
 from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 
@@ -28,6 +29,8 @@ from .extractors import (
     try_date_expr_opts,
     FAST_TAGS,
     FREE_TEXT_EXPRESSIONS,
+    JSON_MODIFIED,
+    JSON_PUBLISHED,
     YMD_PATTERN,
     DAY_RE,
     MONTH_RE,
@@ -45,6 +48,7 @@ from .validators import (
     REFERENCE_FORMAT,
     check_extracted_reference,
     compare_values,
+    convert_date,
     correct_year,
     filter_ymd_candidate,
     get_min_date,
@@ -966,3 +970,301 @@ def find_date(
     converted = check_extracted_reference(reference, options)
     # return or search page HTML
     return converted or search_page(htmlstring, options)
+
+
+# joint publication/update date extraction
+
+ROLE_PUBLISHED = "published"
+ROLE_UPDATED = "updated"
+
+
+@dataclass
+class DateCandidate:
+    "A role-tagged date value along with the source it was extracted from."
+
+    date: str
+    role: str  # ROLE_PUBLISHED or ROLE_UPDATED
+    source: str  # e.g. 'meta[name="datepublished"]', "json-ld:dateModified"
+
+
+@dataclass
+class DatePair:
+    """Joint result of publication and update date extraction.
+
+    ``published`` and ``updated`` are the selected values (None if unknown),
+    ``candidates`` preserves all gathered evidence with roles and sources,
+    and ``conflict``/``conflict_reason`` flag contradictory evidence. Dates
+    are never altered to enforce the publication <= update order: when the
+    evidence contradicts it, the implausible value is dropped instead.
+    """
+
+    published: DateCandidate | None = None
+    updated: DateCandidate | None = None
+    candidates: list[DateCandidate] = field(default_factory=list)
+    conflict: bool = False
+    conflict_reason: str | None = None
+
+
+@dataclass
+class _RawCandidate:
+    "Internal candidate: datetime for comparison, plus role and source."
+
+    moment: datetime
+    role: str
+    source: str
+
+
+def _parse_moment(text: str | None, options: Extractor) -> datetime | None:
+    "Parse a date expression into a datetime, or return None."
+    attempt = try_date_expr(
+        text, REFERENCE_FORMAT, options.extensive, options.min, options.max
+    )
+    if attempt is None:
+        return None
+    try:
+        return datetime.fromisoformat(attempt)
+    except ValueError:
+        try:
+            return datetime.strptime(attempt, REFERENCE_FORMAT)
+        except ValueError:
+            LOGGER.debug("unreadable candidate: %s", attempt)
+    return None
+
+
+def _meta_candidates(tree: HtmlElement, options: Extractor) -> list[_RawCandidate]:
+    "Collect role-tagged date candidates from meta elements."
+    candidates = []
+    for elem in tree.iterfind(".//meta"):
+        if "content" not in elem.attrib and "datetime" not in elem.attrib:
+            continue
+        content, role, source = elem.get("content"), None, None
+        if "name" in elem.attrib:
+            attribute = elem.get("name", "").lower()
+            if attribute in DATE_ATTRIBUTES:
+                role = ROLE_PUBLISHED
+            elif attribute in NAME_MODIFIED:
+                role = ROLE_UPDATED
+            source = f'meta[name="{attribute}"]'
+        elif "property" in elem.attrib:
+            attribute = elem.get("property", "").lower()
+            if attribute in DATE_ATTRIBUTES:
+                role = ROLE_PUBLISHED
+            elif attribute in PROPERTY_MODIFIED:
+                role = ROLE_UPDATED
+            source = f'meta[property="{attribute}"]'
+        elif "itemprop" in elem.attrib:
+            attribute = elem.get("itemprop", "").lower()
+            if attribute in ITEMPROP_ATTRS_ORIGINAL:
+                role = ROLE_PUBLISHED
+            elif attribute in ITEMPROP_ATTRS_MODIFIED:
+                role = ROLE_UPDATED
+            content = elem.get("datetime") or content
+            source = f'meta[itemprop="{attribute}"]'
+        elif elem.get("pubdate", "").lower() == "pubdate":
+            role, source = ROLE_PUBLISHED, "meta[pubdate]"
+        elif "http-equiv" in elem.attrib:
+            attribute = elem.get("http-equiv", "").lower()
+            if attribute == "date":
+                role = ROLE_PUBLISHED
+            elif attribute == "last-modified":
+                role = ROLE_UPDATED
+            source = f'meta[http-equiv="{attribute}"]'
+        if role is None:
+            continue
+        moment = _parse_moment(content, options)
+        if moment is not None:
+            LOGGER.debug("candidate %s from %s: %s", role, source, moment)
+            candidates.append(_RawCandidate(moment, role, source or "meta"))
+    return candidates
+
+
+def _json_candidates(tree: HtmlElement, options: Extractor) -> list[_RawCandidate]:
+    "Collect role-tagged date candidates from JSON-LD sections."
+    candidates = []
+    for elem in tree.xpath(
+        './/script[@type="application/ld+json" or @type="application/settings+json"]'
+    ):
+        if not elem.text or '"date' not in elem.text:
+            continue
+        for pattern, role, source in (
+            (JSON_PUBLISHED, ROLE_PUBLISHED, "json-ld:datePublished"),
+            (JSON_MODIFIED, ROLE_UPDATED, "json-ld:dateModified"),
+        ):
+            for match in pattern.finditer(elem.text):
+                moment = _parse_moment(match[1] + (match[2] or ""), options)
+                if moment is not None:
+                    LOGGER.debug("candidate %s from %s: %s", role, source, moment)
+                    candidates.append(_RawCandidate(moment, role, source))
+    return candidates
+
+
+def collect_date_candidates(
+    tree: HtmlElement, options: Extractor
+) -> list[_RawCandidate]:
+    """Gather all role-tagged date candidates (header meta, then JSON-LD,
+    mirroring the priority order of find_date)."""
+    return _meta_candidates(tree, options) + _json_candidates(tree, options)
+
+
+def _format_candidate(raw: _RawCandidate, options: Extractor) -> DateCandidate | None:
+    "Validate and format a raw candidate into a public DateCandidate."
+    datestring = validate_and_convert(
+        raw.moment, options.format, earliest=options.min, latest=options.max
+    )
+    if datestring is None:
+        return None
+    return DateCandidate(date=datestring, role=raw.role, source=raw.source)
+
+
+def _pipeline_fallback(
+    tree: HtmlElement,
+    url: str | None,
+    original: bool,
+    options: Extractor,
+) -> tuple[datetime, DateCandidate] | None:
+    "Run the generic single-date pipeline as a fallback for a missing role."
+    iso_date = find_date(
+        tree,
+        extensive_search=options.extensive,
+        original_date=original,
+        outputformat="%Y-%m-%d",
+        url=url,
+        min_date=options.min,
+        max_date=options.max,
+    )
+    if iso_date is None:
+        return None
+    moment = datetime.fromisoformat(iso_date)
+    source = "extractor:original" if original else "extractor:latest"
+    role = ROLE_PUBLISHED if original else ROLE_UPDATED
+    candidate = DateCandidate(
+        date=convert_date(iso_date, "%Y-%m-%d", options.format),
+        role=role,
+        source=source,
+    )
+    return moment, candidate
+
+
+def find_date_pair(
+    htmlobject: bytes | str | HtmlElement,
+    extensive_search: bool = True,
+    outputformat: str = "%Y-%m-%d",
+    url: str | None = None,
+    verbose: bool = False,
+    min_date: datetime | str | None = None,
+    max_date: datetime | str | None = None,
+) -> DatePair:
+    """
+    Extract publication and update dates jointly from an HTML document.
+
+    News pages often carry several dates at once (publication, update,
+    comments...), so querying for the earliest or latest date separately is
+    error-prone. This function instead collects role-tagged candidates
+    (publication vs. update) along with their sources, and cross-checks the
+    two values: a publication date cannot be later than an update date.
+
+    When the evidence contradicts this order (e.g. an erroneous metadata
+    update time earlier than the publication date), the implausible value is
+    reported as unknown (None) and the conflict is flagged — dates are never
+    rewritten to force a consistent ordering. The discarded value remains
+    available in the candidates list.
+
+    :param htmlobject:
+        HTML document in string form or LXML parsed tree, or URL string
+    :type htmlobject: string or lxml tree
+    :param extensive_search:
+        Activate pattern-based opportunistic text search
+    :type extensive_search: boolean
+    :param outputformat:
+        Provide a valid datetime format for the returned strings
+        (see datetime.strftime())
+    :type outputformat: string
+    :param url:
+        Provide an URL manually for pattern-searching in URL
+    :type url: string
+    :param verbose:
+        Set verbosity level for debugging
+    :type verbose: boolean
+    :param min_date:
+        Set the earliest acceptable date manually (ISO 8601 YMD format)
+    :type min_date: datetime, string
+    :param max_date:
+        Set the latest acceptable date manually (ISO 8601 YMD format)
+    :type max_date: datetime, string
+    :return: Returns a DatePair with the publication and update dates (or
+        None for unknown values), all candidates, and conflict information
+    """
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
+    result = DatePair()
+
+    tree = load_html(htmlobject)
+    # safeguards
+    if tree is None:
+        return result
+    if outputformat != "%Y-%m-%d" and not is_valid_format(outputformat):
+        return result
+
+    options = Extractor(
+        extensive_search,
+        get_max_date(max_date),
+        get_min_date(min_date),
+        False,
+        outputformat,
+    )
+
+    # probe for canonical links, as in find_date
+    if url is None:
+        urlelem = tree.find('.//link[@rel="canonical"]')
+        if urlelem is not None:
+            url = urlelem.get("href")
+
+    # role-tagged evidence from structured sources (meta, JSON-LD)
+    raw_candidates = collect_date_candidates(tree, options)
+    moments: dict[str, datetime] = {}
+    for role in (ROLE_PUBLISHED, ROLE_UPDATED):
+        for raw in raw_candidates:
+            if raw.role != role:
+                continue
+            candidate = _format_candidate(raw, options)
+            if candidate is not None:
+                result.candidates.append(candidate)
+                if role not in moments:
+                    moments[role] = raw.moment
+                    if role == ROLE_PUBLISHED:
+                        result.published = candidate
+                    else:
+                        result.updated = candidate
+
+    # generic pipeline fallback for roles without structured evidence
+    if result.published is None:
+        fallback = _pipeline_fallback(tree, url, True, options)
+        if fallback is not None:
+            moments[ROLE_PUBLISHED], result.published = fallback
+    if result.updated is None:
+        fallback = _pipeline_fallback(tree, url, False, options)
+        if fallback is not None:
+            moments[ROLE_UPDATED], result.updated = fallback
+
+    # cross-check: a page cannot be updated before it was published;
+    # compare at day granularity to avoid false conflicts from mixed
+    # date/datetime precision
+    if (
+        result.published is not None
+        and result.updated is not None
+        and moments[ROLE_PUBLISHED].date() > moments[ROLE_UPDATED].date()
+    ):
+        result.conflict = True
+        result.conflict_reason = (
+            f"publication date {result.published.date} "
+            f"({result.published.source}) is later than update date "
+            f"{result.updated.date} ({result.updated.source}): "
+            "the update value is implausible and was discarded"
+        )
+        LOGGER.warning("conflicting dates: %s", result.conflict_reason)
+        # the update value cannot be trusted; do not rewrite either date
+        result.updated = None
+
+    return result

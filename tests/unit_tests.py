@@ -29,6 +29,7 @@ from htmldate.core import (
     examine_header,
     examine_text,
     find_date,
+    find_date_pair,
     search_normalized,
     search_page,
     search_pattern,
@@ -2365,3 +2366,99 @@ def test_deferred():
     </head><body></body></html>"""
     assert find_date(htmlstring, deferred_url_extractor=True) == "2017-09-01"
     assert find_date(htmlstring, deferred_url_extractor=False) == "2017-08-30"
+
+
+def test_find_date_pair_consistent():
+    "Joint extraction: consistent meta dates yield both roles with sources."
+    htmlstring = (
+        "<html><head>"
+        '<meta property="article:published_time" content="2020-01-15T08:00:00+00:00"/>'
+        '<meta property="article:modified_time" content="2023-05-20T12:00:00+00:00"/>'
+        "</head><body><p>text</p></body></html>"
+    )
+    pair = find_date_pair(htmlstring)
+    assert pair.conflict is False
+    assert pair.conflict_reason is None
+    assert pair.published is not None and pair.published.date == "2020-01-15"
+    assert pair.published.role == "published"
+    assert pair.published.source == 'meta[property="article:published_time"]'
+    assert pair.updated is not None and pair.updated.date == "2023-05-20"
+    assert pair.updated.role == "updated"
+    assert pair.updated.source == 'meta[property="article:modified_time"]'
+    # all evidence is preserved with roles and sources
+    assert {(c.role, c.date) for c in pair.candidates} == {
+        ("published", "2020-01-15"),
+        ("updated", "2023-05-20"),
+    }
+    # single-date entry points are unaffected
+    assert find_date(htmlstring, original_date=True) == "2020-01-15"
+    assert find_date(htmlstring, original_date=False) == "2023-05-20"
+
+
+def test_find_date_pair_json_ld():
+    "Joint extraction: JSON-LD datePublished/dateModified carry roles."
+    htmlstring = (
+        "<html><head>"
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"Article",'
+        '"datePublished":"2020-01-15T08:00:00+00:00",'
+        '"dateModified":"2023-05-20T12:00:00+00:00"}'
+        "</script></head><body><p>text</p></body></html>"
+    )
+    pair = find_date_pair(htmlstring)
+    assert pair.conflict is False
+    assert pair.published is not None and pair.published.date == "2020-01-15"
+    assert pair.published.source == "json-ld:datePublished"
+    assert pair.updated is not None and pair.updated.date == "2023-05-20"
+    assert pair.updated.source == "json-ld:dateModified"
+
+
+def test_find_date_pair_conflict():
+    """A publication date later than the metadata update time means the
+    update value is erroneous: it must be reported as unknown and flagged,
+    not rewritten to satisfy the publication <= update order."""
+    htmlstring = (
+        "<html><head>"
+        '<meta property="article:published_time" content="2023-05-20T12:00:00+00:00"/>'
+        '<meta property="article:modified_time" content="2023-01-10T12:00:00+00:00"/>'
+        "</head><body><p>text</p></body></html>"
+    )
+    pair = find_date_pair(htmlstring)
+    # the publication date stands, the implausible update is dropped
+    assert pair.conflict is True
+    assert pair.conflict_reason is not None
+    assert "2023-05-20" in pair.conflict_reason
+    assert "2023-01-10" in pair.conflict_reason
+    assert pair.published is not None and pair.published.date == "2023-05-20"
+    assert pair.updated is None
+    # the contradictory evidence is preserved untouched in the candidates
+    assert ("updated", "2023-01-10") in {(c.role, c.date) for c in pair.candidates}
+    # the single-date entry points return both values uncritically, which is
+    # exactly why they cannot be trusted as a reliable answer on their own
+    assert find_date(htmlstring, original_date=True) == "2023-05-20"
+    assert find_date(htmlstring, original_date=False) == "2023-01-10"
+
+
+def test_find_date_pair_partial_and_empty():
+    "Joint extraction: unknown roles stay None, empty input yields an empty pair."
+    # only an update date in the metadata: published falls back to the
+    # generic pipeline (here: the same value), no conflict
+    htmlstring = (
+        "<html><head>"
+        '<meta property="article:modified_time" content="2023-05-20T12:00:00+00:00"/>'
+        "</head><body><p>text</p></body></html>"
+    )
+    pair = find_date_pair(htmlstring)
+    assert pair.conflict is False
+    assert pair.published is not None and pair.published.date == "2023-05-20"
+    assert pair.updated is not None and pair.updated.date == "2023-05-20"
+
+    # no date information at all
+    pair = find_date_pair("<html><head></head><body><p>text</p></body></html>")
+    assert pair.published is None and pair.updated is None
+    assert pair.conflict is False and pair.candidates == []
+
+    # unprocessable input
+    pair = find_date_pair("")
+    assert pair.published is None and pair.updated is None
+    assert pair.conflict is False

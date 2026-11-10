@@ -10,6 +10,8 @@ Handling date extraction
 
 .. autofunction:: htmldate.core.find_date
 
+.. autofunction:: htmldate.core.find_date_pair
+
 .. autofunction:: htmldate.core.examine_header
 
 .. autofunction:: htmldate.core.search_page
