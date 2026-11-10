@@ -107,6 +107,7 @@ Contents
     loaders-context
     nested-loaders
     extending-loaders
+    async-loaders
     rule-usage
     built-in-processors
     api-reference

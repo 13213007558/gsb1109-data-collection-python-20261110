@@ -5,6 +5,19 @@
 Release notes
 =============
 
+.. _release-1.6.0:
+
+itemloaders 1.6.0 (unreleased)
+------------------------------
+
+-   Added :class:`AsyncItemLoader`, an Item Loader that supports coroutine
+    input processors, e.g. for asynchronous address standardization services.
+    Synchronous and coroutine processors can be mixed, in-flight calls are
+    bounded with the ``concurrent_input_processors`` parameter, collected
+    values keep their input order, and failures or cancellation wind down
+    every started call without letting late results reach the item. See
+    :ref:`async-loaders`.
+
 .. _release-1.5.0:
 
 itemloaders 1.5.0 (2026-09-29)

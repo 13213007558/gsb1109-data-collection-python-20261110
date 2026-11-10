@@ -676,3 +676,8 @@ class ItemLoader:
             )
             for jmes in jmess
         )
+
+
+from itemloaders.asyncio import AsyncItemLoader  # noqa: E402
+
+__all__ = ["AsyncItemLoader", "ItemLoader"]
