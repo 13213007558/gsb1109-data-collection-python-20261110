@@ -4,6 +4,7 @@ from warcio.indexer import Indexer
 from warcio.checker import Checker
 from warcio.extractor import Extractor
 from warcio.recompressor import Recompressor
+from warcio.interactions import Interactions
 
 
 try:
@@ -58,6 +59,23 @@ def main(args=None):
     check.add_argument('-v', '--verbose', action='store_true')
     check.set_defaults(func=checker)
 
+    interaction = subparsers.add_parser('interactions',
+            help='Capture interaction query: pair request and response records',
+            description='Pair request and response records into capture interactions.\n'
+                        'Explicit links (WARC-Concurrent-To, WARC-Refers-To) take\n'
+                        'precedence; heuristic pairing by url+time is only used when\n'
+                        '--max-time-delta is given. Ambiguous matches, unpaired records\n'
+                        'and conflicting relations are reported, never silently resolved.')
+    interaction.add_argument('inputs', nargs='*', help='input file(s); default is stdin')
+    interaction.add_argument('--url', dest='urls', action='append',
+            help='only consider records with this exact WARC-Target-URI; '
+                 'may be repeated; default considers all records')
+    interaction.add_argument('--max-time-delta', type=float, default=None,
+            help='maximum seconds between request and response WARC-Date for '
+                 'heuristic pairing; if omitted, only explicit links are paired')
+    interaction.add_argument('-o', '--output', help='output file; default is stdout')
+    interaction.set_defaults(func=interactions)
+
     cmd = parser.parse_args(args=args)
     cmd.func(cmd)
 
@@ -84,6 +102,15 @@ def checker(cmd):
 def extractor(cmd):
     _extractor = Extractor(cmd.filename, cmd.offset)
     _extractor.extract(cmd.payload, cmd.headers)
+
+
+# ============================================================================
+def interactions(cmd):
+    inputs = cmd.inputs or ('-',)  # default to stdin
+    _interactions = Interactions(inputs, cmd.output,
+                                 max_time_delta=cmd.max_time_delta,
+                                 urls=cmd.urls)
+    _interactions.process_all()
 
 
 # ============================================================================

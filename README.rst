@@ -404,6 +404,31 @@ Specifying --payload or --headers will output only the payload or only the WARC 
     warcio extract [--payload | --headers] filename offset
 
 
+Interactions
+~~~~~~~~~~~~
+
+The ``interactions`` command pairs request and response records into
+capture interactions and prints a single JSON report.
+
+Explicit links recorded in the archive (``WARC-Concurrent-To``,
+``WARC-Refers-To``) always take precedence. When no explicit link
+exists, candidate pairs are only proposed if the caller allows it via
+``--max-time-delta`` (maximum seconds between the request and response
+``WARC-Date``) and optional ``--url`` filters. If a response matches
+several possible requests (eg. the same URL requested multiple times in
+a short period), all candidates are reported under ``ambiguous`` and no
+pair is picked. Redirects and the follow-up requests they trigger are
+reported as separate interactions. Duplicate record ids and
+contradictory links are listed under ``conflicts`` and never silently
+overwritten. Records that could not be paired are listed under
+``unpaired``. The report does not depend on the physical order of
+records in the archive.
+
+::
+
+    warcio interactions [--max-time-delta SECONDS] [--url URL] [-o OUTPUT] [inputs ...]
+
+
 Remote File System Support
 --------------------------
 
