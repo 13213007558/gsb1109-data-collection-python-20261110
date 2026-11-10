@@ -1,6 +1,7 @@
 ## Changelog
 
 ## 1.x.x
+- feature: offline `compare_snapshots` entry point and `--compare` CLI option to trace when date declarations appear, change or disappear across HTML snapshots, keeping raw declarations and inferred trusted dates separate and only claiming an article update when the body text changed
 - fix: prefer JSON-LD dates over less reliable header fallbacks (#195)
 
 ## 1.11.0

@@ -13,7 +13,8 @@ __version__ = "1.11.0"
 import logging
 
 from .core import find_date
+from .history import SnapshotHistory, compare_snapshots
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__all__ = ["find_date"]
+__all__ = ["find_date", "compare_snapshots", "SnapshotHistory"]

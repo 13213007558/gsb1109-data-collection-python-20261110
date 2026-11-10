@@ -53,6 +53,9 @@ $ htmldate -u http://blog.python.org/2016/12/python-360-is-now-available.html
 -   Customizable output: Any date format (defaults to [ISO 8601
     YMD](https://en.wikipedia.org/wiki/ISO_8601)).
 -   Detection of both original and updated dates.
+-   Offline comparison of several HTML snapshots of the same page, tracing
+    when date declarations appear, change or disappear without overwriting
+    the history.
 -   Multilingual.
 -   Compatible with Python 3.10 and later.
 

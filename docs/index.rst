@@ -193,6 +193,19 @@ Although the time delta between original publication and "last modified" info is
 For more information see `options page <options.html>`_.
 
 
+Repeated crawls and snapshot history
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the same page is collected several times, its date declarations can be
+corrected, rolled back or removed. The offline ``compare_snapshots`` function
+takes multiple HTML snapshots with their observation times, orders them
+chronologically (out-of-order input included) and reports when each date
+statement appeared, changed or disappeared. The raw declarations stay
+separate from the inferred trusted dates, and an article update is only
+claimed when the body text is known to have changed. See `snapshot
+comparison <history.html>`_.
+
+
 On the command-line
 -------------------
 
@@ -210,7 +223,7 @@ For usage instructions see ``htmldate -h``:
 .. code-block:: bash
 
     $ htmldate --help
-    htmldate [-h] [-f] [-i INPUTFILE] [--original] [-min MINDATE] [-max MAXDATE] [-u URL] [-v] [--version]
+    htmldate [-h] [-f] [-i INPUTFILE] [--original] [-min MINDATE] [-max MAXDATE] [-u URL] [--compare COMPARE] [-v] [--version]
     optional arguments:
         -h, --help            show this help message and exit
         -f, --fast            fast mode: disable extensive search
@@ -222,6 +235,7 @@ For usage instructions see ``htmldate -h``:
         -max MAXDATE, --maxdate MAXDATE
                               latest acceptable date (ISO 8601 YMD)
         -u URL, --URL URL     custom URL download
+        --compare COMPARE     offline snapshot comparison (JSON description, "-" for stdin)
         -v, --verbose         increase output verbosity
         --version             show version information and exit
 
@@ -311,6 +325,7 @@ If the date is nowhere to be found, it might be worth considering `carbon dating
    :maxdepth: 2
 
    corefunctions
+   history
    evaluation
    options
    used-by

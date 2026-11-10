@@ -3,15 +3,18 @@ Implementing a basic command-line interface.
 """
 
 import argparse
+import json
 import logging
 import sys
 
+from datetime import datetime
 from platform import python_version
 
 from lxml.html import HtmlElement
 
 from . import __version__
 from .core import find_date
+from .history import compare_snapshots
 from .utils import fetch_url, is_wrong_document
 
 
@@ -58,6 +61,14 @@ def parse_args(args: list[str]) -> argparse.Namespace:
     )
     argsparser.add_argument("-u", "--URL", help="custom URL download", type=str)
     argsparser.add_argument(
+        "--compare",
+        help="""offline snapshot comparison: path to a JSON file describing
+                            several snapshots of the same page (list of objects
+                            with "id", "observed_at" and "file" or "html" keys);
+                            use "-" to read the description from standard input""",
+        type=str,
+    )
+    argsparser.add_argument(
         "-v", "--verbose", help="increase output verbosity", action="store_true"
     )
     argsparser.add_argument(
@@ -69,11 +80,87 @@ def parse_args(args: list[str]) -> argparse.Namespace:
     return argsparser.parse_args(args)
 
 
+def _read_snapshot_spec(path: str) -> list[dict[str, str]]:
+    "Load the JSON snapshot description, from a file or standard input."
+    if path == "-":
+        raw = sys.stdin.read()
+    else:
+        try:
+            with open(path, mode="r", encoding="utf-8") as inputfile:
+                raw = inputfile.read()
+        except OSError as err:
+            sys.exit(f"Cannot read snapshot description {path}: {err}\n")
+    try:
+        specs = json.loads(raw)
+    except json.JSONDecodeError as err:
+        sys.exit(f"Invalid JSON snapshot description: {err}\n")
+    if not isinstance(specs, list):
+        sys.exit("Snapshot description must be a JSON array\n")
+    return specs
+
+
+def _build_snapshots(
+    specs: list[dict[str, str]],
+) -> list[tuple[str, datetime, str | bytes]]:
+    """Turn JSON specs into (id, observation time, HTML) triples."""
+    snapshots: list[tuple[str, datetime, str | bytes]] = []
+    for index, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            sys.exit(f"Snapshot entry #{index} must be a JSON object\n")
+        snapshot_id = spec.get("id") or f"snapshot-{index + 1}"
+        observed_raw = spec.get("observed_at")
+        if not observed_raw:
+            sys.exit(f"Snapshot {snapshot_id}: missing 'observed_at'\n")
+        try:
+            observed_at = datetime.fromisoformat(observed_raw)
+        except ValueError:
+            sys.exit(
+                f"Snapshot {snapshot_id}: unparseable 'observed_at' "
+                f"(expected ISO 8601): {observed_raw}\n"
+            )
+        if spec.get("file"):
+            try:
+                with open(spec["file"], "rb") as htmlfile:
+                    htmlobject: str | bytes = htmlfile.read()
+            except OSError as err:
+                sys.exit(
+                    f"Snapshot {snapshot_id}: cannot read file "
+                    f"{spec['file']}: {err}\n"
+                )
+        elif "html" in spec:
+            htmlobject = spec["html"]
+        else:
+            sys.exit(
+                f"Snapshot {snapshot_id}: provide either a 'file' path "
+                "or an inline 'html' string\n"
+            )
+        snapshots.append((str(snapshot_id), observed_at, htmlobject))
+    return snapshots
+
+
+def run_comparison(args: argparse.Namespace) -> None:
+    """Offline entry point: compare snapshots and print the traceable history."""
+    specs = _read_snapshot_spec(args.compare)
+    snapshots = _build_snapshots(specs)
+    history = compare_snapshots(
+        snapshots,
+        extensive_search=not args.fast,
+        min_date=args.mindate,
+        max_date=args.maxdate,
+    )
+    sys.stdout.write(json.dumps(history.as_dict(), ensure_ascii=False, indent=2) + "\n")
+
+
 def process_args(args: argparse.Namespace) -> None:
     """Process the arguments passed on the command-line."""
     # verbosity
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
+
+    # offline snapshot comparison
+    if args.compare:
+        run_comparison(args)
+        return
 
     # input type
     if not args.inputfile:
