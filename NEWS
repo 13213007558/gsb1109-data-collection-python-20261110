@@ -1,6 +1,24 @@
 w3lib release notes
 ===================
 
+(unreleased)
+------------
+
+New features:
+
+- :func:`~w3lib.encoding.html_to_unicode` gained an optional
+  ``diagnostics`` parameter. With ``diagnostics=True`` it returns an
+  :class:`~w3lib.encoding.HtmlEncodingDiagnostics` as a third element
+  describing the candidate each detection source (BOM, HTTP header, page
+  declaration and autodetection) offered, the precedence order, the
+  conflicts between them, and the input byte ranges the chosen decoder
+  actually turned into U+FFFD. A U+FFFD the body itself encodes is ordinary
+  output and is never reported as an error. The default two-element return
+  value and its decoding are unchanged; the extra scans only run when
+  diagnostics are requested, the in-memory body is never re-consumed, and the
+  error ranges come from one additional in-memory decode with a recording
+  error handler.
+
 2.6.0 (2026-11-05)
 ------------------
 

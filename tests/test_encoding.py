@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import random
+from dataclasses import FrozenInstanceError
 from io import BytesIO
 from typing import Any
 
@@ -9,6 +10,10 @@ import pytest
 
 import w3lib.encoding
 from w3lib.encoding import (
+    DecodeError,
+    EncodingCandidate,
+    EncodingConflict,
+    HtmlEncodingDiagnostics,
     html_body_declared_encoding,
     html_encoding,
     html_to_unicode,
@@ -624,3 +629,245 @@ class TestHtmlConversion:
     def test_empty_body(self):
         # if no other method available, the default encoding of utf-8 is used
         self._assert_encoding_detected(None, "utf-8", b"")
+
+
+# Short, fixed byte samples. Every assertion references a position in the
+# literal, so each conclusion can be traced back to an original byte range.
+FFFD = "\ufffd"
+
+
+class _MaterializingBytes(bytes):
+    """bytes subclass counting how often frostwork re-materializes it."""
+
+    conversions = 0
+
+    def __bytes__(self) -> bytes:
+        type(self).conversions += 1
+        return bytes.__bytes__(self)
+
+
+class TestHtmlToUnicodeDiagnostics:
+    def test_default_return_is_unchanged(self):
+        body = b'<meta charset="utf-8">ab\xff'
+        result = html_to_unicode(None, body)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        enc, text = result
+        assert enc == "utf-8"
+        assert isinstance(text, str)
+
+    def test_diagnostics_returns_third_element(self):
+        enc, text, diag = html_to_unicode(
+            None, b"<a/>", diagnostics=True
+        )
+        assert enc == "utf-8"
+        assert text == "<a/>"
+        assert isinstance(diag, HtmlEncodingDiagnostics)
+        assert diag.encoding == enc
+        # BOM-less clean UTF-8: BOM absent, the other sources offer nothing.
+        assert diag.bom_length == 0
+        assert diag.order == ("bom", "http", "meta", "autodetect")
+        assert [c.source for c in diag.candidates] == list(diag.order)
+        assert all(isinstance(c, EncodingCandidate) for c in diag.candidates)
+        assert diag.conflicts == ()
+        assert diag.errors == ()
+
+    def test_header_gbk_vs_meta_utf8_conflict(self):
+        # bytes 0..21  meta declaration (UTF-8)
+        # bytes 22..29  "你好世界" in GBK
+        # byte  30      0xff, invalid in GBK -> the only replacement char
+        # bytes 31..32  "页" in GBK
+        body = (
+            b'<meta charset="utf-8">'
+            + "你好世界".encode("gbk")
+            + b"\xff"
+            + "页".encode("gbk")
+        )
+        assert len(body) == 33
+
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=gbk", body, diagnostics=True
+        )
+        assert enc == "gbk"
+        assert text == '<meta charset="utf-8">你好世界' + FFFD + "页"
+        # the header wins over the meta tag and over autodetection
+        by_source = {c.source: c for c in diag.candidates}
+        assert by_source["http"].label == "gbk"
+        assert by_source["http"].encoding == "gbk"
+        assert by_source["http"].chosen is True
+        assert by_source["meta"].label == "UTF-8"
+        assert by_source["meta"].encoding == "utf-8"
+        assert by_source["meta"].chosen is False
+        assert by_source["autodetect"].chosen is False
+        assert by_source["bom"].label is None
+        assert by_source["bom"].encoding is None
+        assert [x.source for x in diag.conflicts] == ["meta", "autodetect"]
+        assert all(isinstance(x, EncodingConflict) for x in diag.conflicts)
+        # the bad byte is located exactly, the surrounding GBK text is intact
+        assert diag.errors == (DecodeError(30, 31, b"\xff"),)
+        error = diag.errors[0]
+        assert error.byte_range == (30, 31)
+        assert body[error.start:error.end] == b"\xff"
+        # one replacement char in the output, but a single error in the input
+        assert text.count(FFFD) == 1
+        assert len(diag.errors) == 1
+
+    def test_legitimate_fffd_utf8_is_not_an_error(self):
+        # bytes 2..4  EF BB BD, a U+FFFD the document itself encoded in UTF-8
+        # byte  7     FF, a genuine decode error
+        body = b"ab\xef\xbf\xbdcd\xff"
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=utf-8", body, diagnostics=True
+        )
+        assert enc == "utf-8"
+        assert text == "ab" + FFFD + "cd" + FFFD
+        # only the FF is an error; the encoded U+FFFD is ordinary output
+        assert diag.errors == (DecodeError(7, 8, b"\xff"),)
+        assert body[diag.errors[0].start:diag.errors[0].end] == b"\xff"
+        assert len(diag.errors) == 1
+        assert text.count(FFFD) == 2
+
+    def test_bom_offsets_and_precedence(self):
+        # original indices: 0..2 BOM(EF BB BF), 3..4 "ab", 5 FF
+        body = codecs.BOM_UTF8 + b"ab\xff"
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=latin1", body, diagnostics=True
+        )
+        assert enc == "utf-8"
+        assert diag.bom_length == 3
+        assert text == "ab" + FFFD
+        # error offsets are into the original body, past the stripped BOM
+        assert diag.errors == (DecodeError(5, 6, b"\xff"),)
+        assert body[diag.errors[0].start:diag.errors[0].end] == b"\xff"
+        by_source = {c.source: c for c in diag.candidates}
+        assert by_source["bom"].encoding == "utf-8"
+        assert by_source["bom"].chosen is True
+        assert by_source["bom"].position == (0, 3)
+        # the latin1 header was still read and recorded as a conflict
+        assert diag.conflicts[0].source == "http"
+        assert diag.conflicts[0].encoding == "cp1252"
+
+    def test_utf16le_bom_error_range(self):
+        # BOM(FF FE) at 0..1, then "hi", then a lone trailing byte
+        body = codecs.BOM_UTF16_LE + b"h\x00i\x00\xff"
+        enc, text, diag = html_to_unicode(None, body, diagnostics=True)
+        assert enc == "utf-16-le"
+        assert diag.bom_length == 2
+        assert text == "hi" + FFFD
+        # the odd final byte is one error at original index 6
+        assert diag.errors == (DecodeError(6, 7, b"\xff"),)
+
+    def test_legitimate_fffd_gb18030_is_not_an_error(self):
+        # bytes 1..4  84 31 A4 37, gb18030's own encoding of U+FFFD
+        # byte  6     FF, a genuine error
+        body = b"x\x84\x31\xa4\x37y\xff"
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=gb18030", body, diagnostics=True
+        )
+        assert enc == "gb18030"
+        assert text == "x" + FFFD + "y" + FFFD
+        assert diag.errors == (DecodeError(6, 7, b"\xff"),)
+        assert len(diag.errors) == 1
+        assert text.count(FFFD) == 2
+
+    def test_single_byte_undefined_slot(self):
+        # windows-874 leaves DB undefined; the frostwork table marks it FFFD.
+        body = b"ab\xdbcd"
+        enc, _text, diag = html_to_unicode(
+            "text/html; charset=windows-874", body, diagnostics=True
+        )
+        assert enc == "cp874"
+        assert diag.errors == (DecodeError(2, 3, b"\xdb"),)
+        assert body[diag.errors[0].start:diag.errors[0].end] == b"\xdb"
+
+    def test_cp1252_c1_bytes_are_not_errors(self):
+        # WHATWG cp1252 maps every byte; C1 slots are controls, not FFFD.
+        body = b"ab\x81cd"
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=latin1", body, diagnostics=True
+        )
+        assert enc == "cp1252"
+        assert text == "ab\x81cd"
+        assert diag.errors == ()
+
+    def test_replacement_encoding_reports_whole_body(self):
+        body = b"caf\xe9 ok"
+        enc, text, diag = html_to_unicode(
+            "text/html; charset=iso-2022-kr", body, diagnostics=True
+        )
+        assert enc == "replacement"
+        assert text == FFFD
+        assert diag.errors == (DecodeError(0, len(body), body),)
+
+    def test_url_informs_autodetect_candidate(self):
+        body = b"\x82\xa0"
+        _enc, _text, diag = html_to_unicode(
+            None, body, url="https://example.jp/", diagnostics=True
+        )
+        autodetect = next(c for c in diag.candidates if c.source == "autodetect")
+        assert autodetect.encoding == "cp932"
+        assert autodetect.chosen is True
+
+    def test_header_label_spelling_is_preserved(self):
+        _enc, _text, diag = html_to_unicode(
+            "text/html; charset=ISO-8859-4", b"abc", diagnostics=True
+        )
+        http = next(c for c in diag.candidates if c.source == "http")
+        assert http.label == "ISO-8859-4"
+        assert http.encoding == "iso8859-4"
+        assert http.chosen is True
+
+    def test_unresolvable_header_label_is_kept_but_not_a_conflict(self):
+        # the raw spelling survives for diagnostics, but with no resolved
+        # encoding it cannot be chosen or reported as a conflict
+        enc, _text, diag = html_to_unicode(
+            "text/html; charset=bogus-xyz", b"abc", diagnostics=True
+        )
+        http = next(c for c in diag.candidates if c.source == "http")
+        assert http.label == "bogus-xyz"
+        assert http.encoding is None
+        assert http.chosen is False
+        assert diag.conflicts == ()
+        assert enc == "utf-8"
+
+    def test_diagnostics_do_not_reread_one_shot_input(self):
+        body = _MaterializingBytes(b'<meta charset="utf-8">ab\xef\xbf\xbdcd\xff')
+        _MaterializingBytes.conversions = 0
+        html_to_unicode(None, body)
+        default_conversions = _MaterializingBytes.conversions
+
+        body = _MaterializingBytes(b'<meta charset="utf-8">ab\xef\xbf\xbdcd\xff')
+        _MaterializingBytes.conversions = 0
+        html_to_unicode(None, body, diagnostics=True)
+        diagnostic_conversions = _MaterializingBytes.conversions
+
+        # The error ranges reuse the single decode; diagnostics add only the
+        # bounded declaration/autodetect prescans, never another full decode.
+        assert diagnostic_conversions <= default_conversions + 2
+
+    def test_diagnostic_dataclasses_are_frozen(self):
+        enc, _text, diag = html_to_unicode(
+            "text/html; charset=utf-8", b"ab\xff", diagnostics=True
+        )
+        assert enc == "utf-8"
+        assert diag.errors
+        with pytest.raises(FrozenInstanceError):
+            diag.errors[0].start = 0  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            diag.candidates[0].chosen = False  # type: ignore[misc]
+
+    def test_diagnostics_work_on_deprecated_path(self):
+        with pytest.warns(DeprecationWarning, match="default_encoding"):
+            enc, _text, diag = html_to_unicode(
+                None,
+                b"no encoding info",
+                default_encoding="ascii",
+                diagnostics=True,
+            )
+        # the legacy tuple keeps the supplied label, the diagnostics report
+        # the codec the bytes are actually decoded with
+        assert enc == "ascii"
+        assert isinstance(diag, HtmlEncodingDiagnostics)
+        assert [c.source for c in diag.candidates] == list(diag.order)
+        assert diag.encoding == "cp1252"
+
