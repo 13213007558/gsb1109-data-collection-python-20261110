@@ -18,6 +18,24 @@ from autoscraper.utils import (
 )
 
 
+class IncompatibleConstraintsError(ValueError):
+    """
+    Raised when the positive samples (wanted_list/wanted_dict) and the
+    negative samples (negative_list/negative_dict) cannot be satisfied at the
+    same time: every rule covering a wanted node also matches one of the
+    designated non-target nodes.
+    """
+
+    def __init__(self, conflicts):
+        self.conflicts = conflicts
+        messages = [
+            "alias {!r}, wanted {!r}: every rule matching this target also "
+            "matches negative node(s) {}".format(alias, wanted, ", ".join(nodes))
+            for alias, wanted, nodes in conflicts
+        ]
+        super().__init__("; ".join(messages))
+
+
 class AutoScraper(object):
     """
     AutoScraper : A Smart, Automatic, Fast and Lightweight Web Scraper for Python.
@@ -174,6 +192,187 @@ class AutoScraper(object):
         ]
         return children
 
+    @staticmethod
+    def _node_text_candidates(node):
+        values = []
+        text = node.getText().strip()
+        if text:
+            values.append(text)
+        non_rec_text = get_non_rec_text(node)
+        if non_rec_text and non_rec_text != text:
+            values.append(non_rec_text)
+        for value in node.attrs.values():
+            if isinstance(value, str):
+                if value.strip():
+                    values.append(value.strip())
+            elif isinstance(value, (list, tuple)):
+                values.extend(v.strip() for v in value if isinstance(v, str) and v.strip())
+        return unique_hashable(values)
+
+    def _node_matches_sample(self, node, sample, url, text_fuzz_ratio):
+        for value in self._node_text_candidates(node):
+            if text_match(sample, value, text_fuzz_ratio):
+                return True
+            if url and text_match(sample, urljoin(url, value), text_fuzz_ratio):
+                return True
+        return False
+
+    @staticmethod
+    def _find_nodes_by_selector(soup, selector):
+        roots = [soup]
+        for part in selector.split():
+            tag, _, class_part = part.partition(".")
+            wanted_classes = {cls for cls in class_part.split(".") if cls}
+            next_roots = []
+            for root in roots:
+                for node in root.findAll(tag, recursive=True):
+                    node_classes = node.attrs.get("class", "")
+                    if isinstance(node_classes, str):
+                        node_classes = node_classes.split()
+                    if wanted_classes.issubset(set(node_classes)):
+                        next_roots.append(node)
+            roots = next_roots
+        return roots
+
+    @staticmethod
+    def _node_selector_parts(node):
+        parts = []
+        current = node
+        while current is not None and getattr(current, "name", None) not in (
+            None,
+            "[document]",
+        ):
+            classes = current.attrs.get("class", "")
+            if isinstance(classes, str):
+                classes = classes.split()
+            parts.append(current.name + "".join("." + cls for cls in classes))
+            current = current.findParent()
+        return " ".join(reversed(parts))
+
+    @staticmethod
+    def _unique_nodes(nodes):
+        seen = set()
+        unique = []
+        for node in nodes:
+            node_id = id(node)
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            unique.append(node)
+        return unique
+
+    def _resolve_one_negative(self, soup, sample, url, text_fuzz_ratio):
+        if hasattr(sample, "findAll") and hasattr(sample, "getText"):
+            if any(node is sample for node in soup.findChildren()):
+                return [sample]
+            nodes = self._find_nodes_by_selector(soup, self._node_selector_parts(sample))
+            return nodes or [sample]
+
+        if isinstance(sample, dict):
+            selector = sample.get("selector")
+            roots = self._find_nodes_by_selector(soup, selector) if selector else [soup]
+            name = sample.get("name")
+            attrs = sample.get("attrs") or {}
+            text = sample.get("text")
+
+            if selector and name is None and not attrs and text is None:
+                return roots
+
+            nodes = []
+            for root in roots:
+                if name is None and not attrs:
+                    candidates = root.findChildren(recursive=True)
+                else:
+                    candidates = root.findAll(name, attrs, recursive=True)
+                for node in candidates:
+                    if text is None or self._node_matches_sample(
+                        node, text, url, text_fuzz_ratio
+                    ):
+                        nodes.append(node)
+            return nodes
+
+        if isinstance(sample, str) or hasattr(sample, "fullmatch"):
+            return [
+                node
+                for node in soup.findChildren()
+                if self._node_matches_sample(node, sample, url, text_fuzz_ratio)
+            ]
+
+        raise TypeError("Unsupported negative sample: {!r}".format(sample))
+
+    def _resolve_negative_nodes(
+        self, soup, negative_list, negative_dict, url, text_fuzz_ratio
+    ):
+        def resolve(samples):
+            nodes = []
+            for sample in samples:
+                nodes.extend(
+                    self._resolve_one_negative(soup, sample, url, text_fuzz_ratio)
+                )
+            return self._unique_nodes(nodes)
+
+        global_nodes = resolve(negative_list) if negative_list else []
+        alias_nodes = {}
+        if negative_dict:
+            for alias, samples in negative_dict.items():
+                if samples:
+                    alias_nodes[alias] = resolve(samples)
+        return global_nodes, alias_nodes
+
+    def _get_matched_nodes(self, stack, soup):
+        parents = [soup]
+        stack_content = stack["content"]
+        for index, item in enumerate(stack_content):
+            if item[0] == "[document]":
+                continue
+            children = []
+            for parent in parents:
+                found = parent.findAll(item[0], item[1], recursive=False)
+                if not found:
+                    continue
+                if index == len(stack_content) - 1:
+                    idx = min(len(found) - 1, stack_content[index - 1][2])
+                    found = [found[idx]]
+                children += found
+            parents = children
+        return parents
+
+    @staticmethod
+    def _node_touches(node, negative_nodes):
+        negative_ids = {id(negative) for negative in negative_nodes}
+
+        current = node
+        while current is not None:
+            if id(current) in negative_ids:
+                return True
+            current = current.findParent()
+
+        for descendant in node.findChildren(recursive=True):
+            if id(descendant) in negative_ids:
+                return True
+        return False
+
+    def _stack_hits_nodes(self, stack, soup, negative_nodes):
+        if not negative_nodes:
+            return False
+        for node in self._get_matched_nodes(stack, soup):
+            if self._node_touches(node, negative_nodes):
+                return True
+        return False
+
+    @staticmethod
+    def _describe_node(node):
+        classes = node.attrs.get("class", "")
+        if isinstance(classes, list):
+            classes = " ".join(classes)
+        label = node.name
+        if classes:
+            label += "." + ".".join(classes.split())
+        text = node.getText().strip()
+        if text:
+            label += "={!r}".format(text if len(text) <= 40 else text[:37] + "...")
+        return "<{}>".format(label)
+
     def build(
         self,
         url=None,
@@ -183,6 +382,8 @@ class AutoScraper(object):
         request_args=None,
         update=False,
         text_fuzz_ratio=1.0,
+        negative_list=None,
+        negative_dict=None,
     ):
         """
         Automatically constructs a set of rules to scrape the specified target[s] from a web page.
@@ -199,8 +400,8 @@ class AutoScraper(object):
                 wanted_dict will be ignored.
 
         wanted_dict: dict, optional
-            A dict of needed contents to be scraped. Keys are aliases and values are list of target texts
-                or compiled regular expressions.
+            A dict of needed contents to be scraped. Keys are aliases and values
+                are list of target texts or compiled regular expressions.
                 AutoScraper learns a set of rules to scrape these targets and sets its aliases.
 
         html: str, optional
@@ -218,9 +419,34 @@ class AutoScraper(object):
         text_fuzz_ratio: float in range [0, 1], optional, defaults to 1.0
             The fuzziness ratio threshold for matching the wanted contents.
 
+        negative_list: list, optional
+            A list of explicit non-target samples used to keep learned rules away
+                from nodes that must not be scraped (e.g. sidebar prices that share
+                their text with the main content). Each entry may be:
+                - a string or compiled regular expression, resolved to every node
+                  whose text or attribute value matches;
+                - a parsed element (BeautifulSoup tag / node), used as-is;
+                - a node selector dict such as {"name": "p", "attrs": {"class": "price"},
+                  "selector": "aside.widget"} where selector is an optional CSS-like
+                  ancestor path restricting which matching nodes are negatives.
+            Rules are filtered by node position, so identical text in two regions is
+                distinguished instead of being globally excluded by string.
+
+        negative_dict: dict, optional
+            Like negative_list but keyed by alias. A negative rule only filters rules
+                learned for the matching alias; the empty-string key applies to
+                wanted_list targets. Entries are applied in addition to negative_list.
+
         Returns:
         --------
         List of similar results
+
+        Raises:
+        --------
+        IncompatibleConstraintsError
+            When every rule learned for a wanted target also matches one of the
+                supplied negative nodes, i.e. the positive and negative constraints
+                cannot be satisfied together. No empty rule set is produced.
         """
 
         if not wanted_list and not (wanted_dict and any(wanted_dict.values())):
@@ -228,7 +454,13 @@ class AutoScraper(object):
 
         soup = self._get_soup(url=url, html=html, request_args=request_args)
 
+        global_negative_nodes, alias_negative_nodes = self._resolve_negative_nodes(
+            soup, negative_list, negative_dict, url, text_fuzz_ratio
+        )
+
         result_list = []
+        conflicts = []
+        original_stack_list = list(self.stack_list)
 
         if update is False:
             self.stack_list = []
@@ -242,14 +474,31 @@ class AutoScraper(object):
             wanted_items = [normalize(w) for w in wanted_items]
             wanted_list += wanted_items
 
+            negative_nodes = (
+                global_negative_nodes + alias_negative_nodes.get(alias, [])
+            )
+
             for wanted in wanted_items:
                 children = self._get_children(soup, wanted, url, text_fuzz_ratio)
 
+                accepted_any = False
                 for child in children:
                     result, stack = self._get_result_for_child(child, soup, url)
+                    if self._stack_hits_nodes(stack, soup, negative_nodes):
+                        continue
                     stack["alias"] = alias
                     result_list += result
                     self.stack_list.append(stack)
+                    accepted_any = True
+
+                if children and not accepted_any:
+                    conflicts.append(
+                        (alias, wanted, [self._describe_node(n) for n in negative_nodes])
+                    )
+
+        if conflicts:
+            self.stack_list = original_stack_list
+            raise IncompatibleConstraintsError(conflicts)
 
         result_list = [item.text for item in result_list]
         result_list = unique_hashable(result_list)

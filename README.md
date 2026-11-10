@@ -118,6 +118,47 @@ scraper.build(url, wanted_list)
 Simple, right?
 
 
+### Excluding non-target nodes with negative samples
+
+When the same text appears in more than one place on a page (for example a
+sidebar price that is identical to a main-content price), `wanted_list` alone
+learns rules for every matching region. Pass `negative_list` to designate the
+nodes that must **not** be scraped. Filtering is done by node position
+(identity and ancestry), never by excluding the string globally, so identical
+text in the sidebar and the main content is still distinguished.
+
+```python
+from autoscraper import AutoScraper, IncompatibleConstraintsError
+
+html = """
+<div class="page">
+  <aside class="sidebar"><p class="price">$10</p></aside>
+  <main class="content"><p class="price">$10</p></main>
+</div>
+"""
+
+scraper = AutoScraper()
+
+# Each entry may be a node selector dict, a string/regex (resolved to every
+# matching node), or a parsed element obtained from the page soup.
+scraper.build(
+    html=html,
+    wanted_list=["$10"],
+    negative_list=[
+        {"selector": "aside.sidebar"},  # CSS-like ancestor path
+        {"name": "p", "attrs": {"class": "price"}, "selector": "aside.sidebar"},
+    ],
+)
+# Only the main.content rule is kept; the sidebar rule is discarded.
+```
+
+Use `negative_dict` to scope negatives to a specific alias when building with
+`wanted_dict`. If the positive and negative constraints cannot be satisfied at
+the same time (every rule covering a wanted node also hits a negative node),
+`build` raises `IncompatibleConstraintsError` naming the conflicting target and
+nodes instead of silently producing an empty rule set. The scraper's
+previously learned rules are left untouched in that case.
+
 ### Saving the model
 
 We can now save the built model to use it later. To save:
