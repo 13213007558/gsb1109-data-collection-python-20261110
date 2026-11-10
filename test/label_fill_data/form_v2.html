@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>企业信息登记（新版字段名）</title></head>
+<body>
+<!-- 字段全部改名，且不再使用 <label>，改用纯表格文字；可见标签保持不变 -->
+<form name="register" id="regform" action="/submit" method="post">
+  <table>
+    <tr>
+      <td>企业名称</td>
+      <td><input type="text" id="f_enterprise" name="enterprise_name"></td>
+    </tr>
+    <tr>
+      <td>联系人</td>
+      <td><input type="text" id="f_linkman" name="linkman"></td>
+    </tr>
+    <tr>
+      <td>备注</td>
+      <td><textarea id="f_remark" name="remark_text"></textarea></td>
+    </tr>
+  </table>
+  <input type="hidden" name="csrf_token" value="token-v2">
+  <button type="submit">提交</button>
+</form>
+</body>
+</html>

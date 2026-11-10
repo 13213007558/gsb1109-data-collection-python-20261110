@@ -123,6 +123,11 @@ class Browser(UserAgentBase):
         on the interface this function must support.
     :param factory_class: HTML Factory class to use. Defaults to
                             :class:`mechanize.Factory`
+    :param label_sources: optional auxiliary label sources used by
+                            :meth:`mechanize.HTMLForm.find_control_by_label`.
+                            Bare tag names ("td") mean the element's visible
+                            text; (tag, attribute) pairs (e.g.
+                            ("input", "aria-label")) mean an attribute value.
 
     """
 
@@ -137,7 +142,8 @@ class Browser(UserAgentBase):
             request_class=None,
             content_parser=None,
             factory_class=Factory,
-            allow_xhtml=False, ):
+            allow_xhtml=False,
+            label_sources=()):
         """
         Only named arguments should be passed to this constructor.
 
@@ -153,6 +159,8 @@ class Browser(UserAgentBase):
 
         factory = factory_class(allow_xhtml=allow_xhtml)
         factory.set_request_class(request_class)
+        if label_sources:
+            factory.set_label_sources(label_sources)
         if content_parser is not None:
             factory.set_content_parser(content_parser)
         self._factory = factory
@@ -176,6 +184,7 @@ class Browser(UserAgentBase):
         for attr in ('_response_type_finder', '_encoding_finder',
                      '_content_parser'):
             setattr(ans._factory, attr, getattr(self._factory, attr))
+        ans._factory.label_sources = self._factory.label_sources
         ans.request_class = self.request_class
         ans._history = copy.copy(self._history)
         return ans
@@ -679,6 +688,22 @@ class Browser(UserAgentBase):
                     description.append('%s = %r' % (k, v))
             description = ", ".join(description)
             raise FormNotFoundError("no form matching " + description)
+
+    def set_label_sources(self, label_sources):
+        """Configure auxiliary label sources for forms.
+
+        Controls the extra captions considered by
+        :meth:`mechanize.HTMLForm.find_control_by_label` in addition to real
+        ``<label>`` elements.  Bare tag names (e.g. ``"td"``) mean the visible
+        text of an enclosing element; ``(tag, attribute)`` pairs (e.g.
+        ``("input", "aria-label")``) mean an HTML attribute value.  Pass an
+        empty sequence to disable auxiliary labels again.
+
+        Applies to pages parsed from now on; the currently displayed page is
+        re-parsed lazily on the next form access.
+
+        """
+        self._factory.set_label_sources(label_sources)
 
     def click(self, *args, **kwds):
         """See :meth:`mechanize.HTMLForm.click()` for documentation."""

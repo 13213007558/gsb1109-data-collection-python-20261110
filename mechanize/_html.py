@@ -238,10 +238,18 @@ class Factory:
     def __init__(
             self,
             default_encoding=DEFAULT_ENCODING,
-            allow_xhtml=False, ):
+            allow_xhtml=False,
+            label_sources=()):
         """
 
         Pass keyword arguments only.
+
+        :param label_sources: where to look for auxiliary labels, in addition
+            to real <label> elements, when filling forms by visible label.
+            Bare tag names ("td") use the element's visible text;
+            (tag, attribute) pairs (e.g. ("input", "aria-label")) use the
+            attribute's value.  Forwarded to
+            :func:`mechanize._form.parse_forms`.
 
         """
         self._encoding_finder = EncodingFinder(default_encoding)
@@ -249,6 +257,7 @@ class Factory:
         self._response_type_finder = ResponseTypeFinder(
             allow_xhtml=allow_xhtml)
         self._content_parser = content_parser
+        self.label_sources = label_sources
         self._current_forms = self._current_links = self._current_title = lazy
         self._current_global_form = self._root = lazy
         self._raw_data = b''
@@ -267,6 +276,17 @@ class Factory:
 
         """
         self._request_class = request_class
+
+    def set_label_sources(self, label_sources):
+        """Configure auxiliary label sources for subsequently parsed forms.
+
+        See the label_sources parameter of :class:`Factory` for the accepted
+        values.  Forms already parsed are unaffected.
+
+        """
+        # normalisation happens inside parse_forms
+        self.label_sources = label_sources
+        self._current_forms = self._current_global_form = lazy
 
     def set_response(self, response):
         """Set response.
@@ -335,4 +355,6 @@ class Factory:
         if self.root is None:
             return (), None
         return parse_forms(self.root,
-                           self._response.geturl(), self._request_class, encoding=self.form_encoding)
+                           self._response.geturl(), self._request_class,
+                           encoding=self.form_encoding,
+                           label_sources=self.label_sources)

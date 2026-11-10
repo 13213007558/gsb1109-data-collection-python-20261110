@@ -261,6 +261,11 @@ def _get_label(attrs):
         return Label(text)
 
 
+def _get_aux_labels(attrs):
+    return tuple(Label(text) for text in attrs.get("__aux_labels", ())
+                 if compress_whitespace(text))
+
+
 class Control:
     """An HTML form control.
 
@@ -375,7 +380,8 @@ class Control:
 
         If the control was surrounded by a <label> tag, that will be the first
         label; all other labels, connected by 'for' and 'id', are in the order
-        that appear in the HTML.
+        that appear in the HTML.  Any auxiliary labels derived from the
+        configured label sources (see HTMLForm.label_sources) come last.
 
         """
         res = []
@@ -383,6 +389,7 @@ class Control:
             res.append(self._label)
         if self.id:
             res.extend(self._form._id_to_labels.get(self.id, ()))
+        res.extend(getattr(self, "_aux_labels", ()))
         return res
 
 
@@ -403,6 +410,7 @@ class ScalarControl(Control):
     def __init__(self, type, name, attrs, index=None):
         self._index = index
         self._label = _get_label(attrs)
+        self._aux_labels = _get_aux_labels(attrs)
         self.__dict__["type"] = type.lower()
         self.__dict__["name"] = name
         self._value = attrs.get("value")
@@ -652,6 +660,7 @@ class Item:
         self.__dict__.update({
             "name": attrs["value"],
             "_labels": label and [label] or [],
+            "_aux_labels": _get_aux_labels(attrs),
             "attrs": attrs,
             "_control": control,
             "disabled": 'disabled' in attrs,
@@ -667,7 +676,8 @@ class Item:
         For items that represent radio buttons or checkboxes, if the item was
         surrounded by a <label> tag, that will be the first label; all other
         labels, connected by 'for' and 'id', are in the order that appear in
-        the HTML.
+        the HTML.  Auxiliary labels derived from the configured label sources
+        (see HTMLForm.label_sources) come last.
 
         For items that represent select options, if the option had a label
         attribute, that will be the first label.  If the option has contents
@@ -682,6 +692,7 @@ class Item:
         res.extend(self._labels)
         if self.id:
             res.extend(self._control._form._id_to_labels.get(self.id, ()))
+        res.extend(getattr(self, "_aux_labels", ()))
         return res
 
     def __getattr__(self, name):
@@ -826,6 +837,7 @@ class ListControl(Control):
         self.__dict__["type"] = type.lower()
         self.__dict__["name"] = name
         self._value = attrs.get("value")
+        self._aux_labels = _get_aux_labels(attrs)
         self.disabled = False
         self.readonly = False
         self.id = attrs.get("id")
@@ -1842,7 +1854,8 @@ class HTMLForm:
                  forms=None,
                  labels=None,
                  id_to_labels=None,
-                 encoding=None):
+                 encoding=None,
+                 label_sources=()):
         """
         In the usual case, use ParseResponse (or ParseFile) to create new
         HTMLForm objects.
@@ -1852,6 +1865,9 @@ class HTMLForm:
         enctype: form transfer encoding MIME type
         name: name of form
         attrs: dictionary mapping original HTML form attributes to their values
+        label_sources: tuple of (tag, attribute_or_None) pairs describing where
+            auxiliary labels may be found in addition to real <label> elements
+            (see find_control_by_label)
 
         """
         self.action = action
@@ -1870,6 +1886,10 @@ class HTMLForm:
         self._forms = forms  # this is a semi-public API!
         self._labels = labels  # this is a semi-public API!
         self._id_to_labels = id_to_labels  # this is a semi-public API!
+
+        # auxiliary label sources, as normalised by
+        # mechanize._form.normalize_label_sources
+        self.label_sources = tuple(label_sources)
 
         self._urlunparse = urlunparse
         self._urlparse = urlparse
@@ -2354,6 +2374,156 @@ class HTMLForm:
             raise ValueError(
                 "at least one argument must be supplied to specify control")
         return self._find_control(name, type, kind, id, label, predicate, nr)
+
+# ---------------------------------------------------
+# Label-based form filling.
+
+    @staticmethod
+    def _describe_control(control):
+        bits = ["type '%s'" % control.type]
+        if control.name is not None:
+            bits.append("name %r" % control.name)
+        if control.id is not None:
+            bits.append("id '%s'" % control.id)
+        return ", ".join(bits)
+
+    def _controls_with_visible_label(
+            self, label_text, type=None, kind=None, id=None,
+            include_hidden=False, include_disabled=False):
+        """Return distinct controls whose visible label matches exactly.
+
+        Matching is exact (after whitespace compression) against every label
+        reachable from the control: explicit ``<label for=id>`` associations,
+        labels that wrap the control, and any auxiliary labels derived from the
+        configured label_sources.
+
+        Hidden controls (type "hidden") and disabled controls are excluded
+        unless explicitly requested.  Radio and checkbox controls never carry
+        labels of their own -- their items do -- so use the item-level label
+        machinery (e.g. set_value_by_label) for those.
+
+        """
+        if not isstringlike(label_text):
+            raise TypeError("label text must be string-like")
+        wanted = compress_whitespace(label_text)
+        if not wanted:
+            raise ValueError("label text must not be empty")
+        if type is not None and not isstringlike(type):
+            raise TypeError("control type must be string-like")
+        if kind is not None and not isstringlike(kind):
+            raise TypeError("control kind must be string-like")
+        if id is not None and not isstringlike(id):
+            raise TypeError("control id must be string-like")
+
+        matches = []
+        for control in self.controls:
+            if not include_hidden and control.type == "hidden":
+                continue
+            if not include_disabled and getattr(control, "disabled", False):
+                continue
+            if type is not None and type != control.type:
+                continue
+            if kind is not None and not control.is_of_kind(kind):
+                continue
+            if id is not None and id != control.id:
+                continue
+            try:
+                labels = control.get_labels()
+            except Exception:
+                labels = ()
+            if any(compress_whitespace(l.text) == wanted for l in labels):
+                if not any(control is matched for matched in matches):
+                    matches.append(control)
+        return matches
+
+    def find_control_by_label(
+            self, label_text, type=None, kind=None, id=None,
+            include_hidden=False, include_disabled=False, nr=None):
+        """Locate a control by its *visible* label text.
+
+        Unlike :meth:`find_control`, this matches the caption a human reads on
+        the page rather than the (often renamed) ``name`` attribute, so the
+        same script keeps working when a site renames its fields but leaves
+        the labels untouched.
+
+        Every label reachable from a control is considered, in this order:
+
+        - explicit association: ``<label for="id">`` pointing at the control;
+        - wrapping association: a ``<label>`` that contains the control;
+        - auxiliary labels collected from the configurable ``label_sources``
+          (for example the visible text of an enclosing table cell, or an
+          ``aria-label``/``title`` attribute).
+
+        :arg label_text: exact caption to match; surrounding and repeated
+            whitespace is ignored, and matching is case-sensitive.
+        :arg type, kind, id: optional extra restrictions, as for
+            :meth:`find_control`.
+        :arg include_hidden: include controls of type "hidden" (excluded by
+            default, since they have no visible label on the page).
+        :arg include_disabled: include disabled controls (excluded by default).
+        :arg nr: optional 0-based index among the controls carrying the label.
+        :returns: the selected :class:`Control`.  Its ``name``, ``id`` and
+            ``type`` attributes identify what was actually chosen, so the
+            caller can narrow the form further or verify the selection.
+        :raises ControlNotFoundError: if no eligible control carries the label.
+        :raises AmbiguityError: if more than one eligible control carries the
+            same label and ``nr`` was not supplied.  The exception message
+            lists the identity (type/name/id) of every candidate.
+
+        """
+        if nr is not None and nr < 0:
+            raise ValueError("control number must be a positive integer")
+        matches = self._controls_with_visible_label(
+            label_text, type, kind, id, include_hidden, include_disabled)
+
+        if nr is not None:
+            if len(matches) <= nr:
+                raise ControlNotFoundError(
+                    "no control matching visible label %r at nr %d"
+                    % (label_text, nr))
+            return matches[nr]
+
+        if not matches:
+            description = "visible label %r" % label_text
+            if type is not None:
+                description += ", type '%s'" % type
+            if kind is not None:
+                description += ", kind '%s'" % kind
+            if id is not None:
+                description += ", id '%s'" % id
+            raise ControlNotFoundError("no control matching " + description)
+        if len(matches) > 1:
+            identities = "; ".join(
+                self._describe_control(c) for c in matches)
+            raise AmbiguityError(
+                "visible label %r is attached to more than one control: %s. "
+                "Pass nr= to disambiguate." % (label_text, identities))
+        return matches[0]
+
+    def set_by_label(self, label_text, value, nr=None, **kwds):
+        """Fill the control showing label_text with value, returning it.
+
+        A convenience wrapper around :meth:`find_control_by_label`: finds the
+        uniquely-labelled control, assigns ``value`` to its ``value``
+        attribute, and returns the selected :class:`Control` so the caller can
+        inspect its identity (``name``/``id``/``type``) or keep operating on
+        it.  Keyword arguments other than ``nr`` are forwarded to
+        :meth:`find_control_by_label` (e.g. ``type``, ``kind``,
+        ``include_disabled``).
+
+        The same ambiguity and not-found rules as
+        :meth:`find_control_by_label` apply -- a duplicated label is never
+        silently resolved by picking the first control.
+
+        """
+        control = self.find_control_by_label(label_text, nr=nr, **kwds)
+        control.value = value
+        return control
+
+    def get_by_label(self, label_text, nr=None, **kwds):
+        """Return (control, value) for the control showing label_text."""
+        control = self.find_control_by_label(label_text, nr=nr, **kwds)
+        return control, control.value
 
 # ---------------------------------------------------
 # Private methods.

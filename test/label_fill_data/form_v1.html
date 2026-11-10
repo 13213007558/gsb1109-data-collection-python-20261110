@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>企业信息登记（旧版字段名）</title></head>
+<body>
+<form name="register" id="regform" action="/submit" method="post">
+  <table>
+    <tr>
+      <td><label for="f_corp">企业名称</label></td>
+      <td><input type="text" id="f_corp" name="corpName"></td>
+    </tr>
+    <tr>
+      <td><label>联系人<input type="text" name="contactPerson"></label></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td><label for="f_note">备注</label></td>
+      <td><textarea id="f_note" name="memo"></textarea></td>
+    </tr>
+  </table>
+  <input type="hidden" name="csrf_token" value="token-v1">
+  <button type="submit">提交</button>
+</form>
+</body>
+</html>
