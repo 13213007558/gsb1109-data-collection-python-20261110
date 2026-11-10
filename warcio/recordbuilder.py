@@ -30,10 +30,12 @@ class RecordBuilder(object):
     NO_PAYLOAD_DIGEST_TYPES = ('warcinfo', 'revisit')
 
 
-    def __init__(self, warc_version=None, header_filter=None):
+    def __init__(self, warc_version=None, header_filter=None, digest_algorithm='sha1'):
         self.warc_version = self._parse_warc_version(warc_version)
 
         self.header_filter = header_filter
+
+        self.digest_algorithm = digest_algorithm
 
     def create_warcinfo_record(self, filename, info):
         warc_headers = StatusAndHeaders('', [], protocol=self.warc_version)
@@ -221,9 +223,8 @@ class RecordBuilder(object):
 
             yield buf
 
-    @staticmethod
-    def _create_digester():
-        return Digester('sha1')
+    def _create_digester(self):
+        return Digester(self.digest_algorithm)
 
     @staticmethod
     def _create_temp_file():

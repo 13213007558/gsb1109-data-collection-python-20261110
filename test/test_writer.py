@@ -844,3 +844,185 @@ Content-Length: {0}\r\n\
             assert new_rec.http_headers == record.http_headers
             assert new_rec.raw_stream.read() == payload
 
+
+# ============================================================================
+class TestDedupWarcWriter(object):
+    PAYLOAD = b'<html>same body every time</html>'
+
+    def _make_response(self, writer, uri, statusline, headers, date):
+        http_headers = StatusAndHeaders(statusline, headers, protocol='HTTP/1.0')
+        record = writer.create_warc_record(uri, 'response',
+                                           payload=BytesIO(self.PAYLOAD),
+                                           length=len(self.PAYLOAD),
+                                           http_headers=http_headers)
+        record.rec_headers.replace_header('WARC-Date', date)
+        return record
+
+    def _restore_observations(self, stream):
+        """Re-read records, resolving revisits against stored originals.
+
+        Returns a list of (statusline, headers, payload) per observation.
+        """
+        originals = {}
+        observations = []
+        for record in ArchiveIterator(stream):
+            if record.rec_type == 'revisit':
+                ref = (record.rec_headers.get_header('WARC-Refers-To-Target-URI'),
+                       record.rec_headers.get_header('WARC-Refers-To-Date'))
+                payload = originals[ref]
+            else:
+                payload = record.content_stream().read()
+                ref = (record.rec_headers.get_header('WARC-Target-URI'),
+                       record.rec_headers.get_header('WARC-Date'))
+                originals[ref] = payload
+
+            observations.append((record.http_headers.statusline,
+                                 list(record.http_headers.headers),
+                                 payload))
+        return observations
+
+    def test_dedup_consecutive_captures(self, is_gzip):
+        """Same payload, different response headers on each capture:
+        first capture stored in full, later ones as revisits, and every
+        observation can be restored after re-reading."""
+        writer = BufferWARCWriter(gzip=is_gzip, dedup=True)
+
+        captures = [
+            ('200 OK', [('Content-Type', 'text/html'),
+                        ('X-Capture', '1')], '2026-11-10T00:00:01Z'),
+            ('200 OK', [('Content-Type', 'text/html'),
+                        ('Cache-Control', 'no-cache'),
+                        ('X-Capture', '2')], '2026-11-10T00:00:02Z'),
+            ('404 Not Found', [('Content-Type', 'text/html'),
+                               ('X-Capture', '3')], '2026-11-10T00:00:03Z'),
+        ]
+
+        for statusline, headers, date in captures:
+            writer.write_record(self._make_response(writer, 'http://example.com/',
+                                                    statusline, headers, date))
+
+        TestWarcWriter._validate_record_content_len(BytesIO(writer.get_contents()))
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == ['response', 'revisit', 'revisit']
+
+        # each record keeps its own capture time
+        assert [rec.rec_headers.get_header('WARC-Date') for rec in records] == \
+                [date for _, _, date in captures]
+
+        # revisits point back at the original capture
+        for rec in records[1:]:
+            assert rec.rec_headers.get_header('WARC-Profile') == RecordBuilder.REVISIT_PROFILE
+            assert rec.rec_headers.get_header('WARC-Refers-To-Target-URI') == 'http://example.com/'
+            assert rec.rec_headers.get_header('WARC-Refers-To-Date') == '2026-11-10T00:00:01Z'
+            assert rec.rec_headers.get_header('WARC-Payload-Digest') == \
+                    records[0].rec_headers.get_header('WARC-Payload-Digest')
+
+        # every observation restores to its own status, headers and payload
+        observations = self._restore_observations(writer.get_stream())
+        assert observations == [(statusline, headers, self.PAYLOAD)
+                                for statusline, headers, _ in captures]
+
+    def test_dedup_disabled_by_default(self, is_gzip):
+        writer = BufferWARCWriter(gzip=is_gzip)
+
+        for i in range(2):
+            writer.write_record(self._make_response(writer, 'http://example.com/',
+                                                    '200 OK', [], '2026-11-10T00:00:0%dZ' % i))
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == ['response', 'response']
+
+    def test_dedup_per_url_default(self):
+        """By default, identical payloads under different URIs are not shared"""
+        writer = BufferWARCWriter(gzip=False, dedup=True)
+
+        writer.write_record(self._make_response(writer, 'http://example.com/1',
+                                                '200 OK', [], '2026-11-10T00:00:01Z'))
+        writer.write_record(self._make_response(writer, 'http://example.com/2',
+                                                '200 OK', [], '2026-11-10T00:00:02Z'))
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == ['response', 'response']
+
+    def test_dedup_cross_url_allowed(self):
+        """Caller may allow different URIs to share an identical payload"""
+        writer = BufferWARCWriter(gzip=False, dedup=True, dedup_per_url=False)
+
+        writer.write_record(self._make_response(writer, 'http://example.com/1',
+                                                '200 OK', [], '2026-11-10T00:00:01Z'))
+        writer.write_record(self._make_response(writer, 'http://example.com/2',
+                                                '200 OK', [], '2026-11-10T00:00:02Z'))
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == ['response', 'revisit']
+        assert records[1].rec_headers.get_header('WARC-Target-URI') == 'http://example.com/2'
+        assert records[1].rec_headers.get_header('WARC-Refers-To-Target-URI') == 'http://example.com/1'
+
+        observations = self._restore_observations(writer.get_stream())
+        assert observations == [('200 OK', [], self.PAYLOAD),
+                                ('200 OK', [], self.PAYLOAD)]
+
+    def test_dedup_failed_write_not_registered(self):
+        """A failed write must not leave a revisit referring to a payload
+        that was never stored"""
+        writer = BufferWARCWriter(gzip=False, dedup=True)
+
+        record = self._make_response(writer, 'http://example.com/',
+                                     '200 OK', [], '2026-11-10T00:00:01Z')
+
+        orig_write = writer._write_warc_record
+
+        def fail_once(out, rec):
+            writer._write_warc_record = orig_write
+            raise IOError('simulated write failure')
+
+        writer._write_warc_record = fail_once
+
+        with pytest.raises(IOError):
+            writer.write_record(record)
+
+        assert writer._dedup_index == {}
+
+        # retrying the same capture writes the full response, not a revisit
+        writer.write_record(record)
+
+        records = [(rec.rec_type, rec.content_stream().read())
+                   for rec in ArchiveIterator(writer.get_stream())]
+        assert records == [('response', self.PAYLOAD)]
+
+    def test_dedup_digest_algorithm_configurable(self):
+        writer = BufferWARCWriter(gzip=False, dedup=True, digest_algorithm='sha256')
+
+        writer.write_record(self._make_response(writer, 'http://example.com/',
+                                                '200 OK', [], '2026-11-10T00:00:01Z'))
+        writer.write_record(self._make_response(writer, 'http://example.com/',
+                                                '200 OK', [], '2026-11-10T00:00:02Z'))
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == ['response', 'revisit']
+        for rec in records:
+            assert rec.rec_headers.get_header('WARC-Payload-Digest').startswith('sha256:')
+
+    def test_dedup_request_response_pair(self, is_gzip):
+        writer = BufferWARCWriter(gzip=is_gzip, dedup=True)
+
+        def make_req(date):
+            req = writer.create_warc_record('http://example.com/', 'request',
+                                            http_headers=StatusAndHeaders(
+                                                'GET / HTTP/1.0',
+                                                [('Host', 'example.com')],
+                                                is_http_request=True))
+            req.rec_headers.replace_header('WARC-Date', date)
+            return req
+
+        for i in range(2):
+            date = '2026-11-10T00:00:0%dZ' % i
+            resp = self._make_response(writer, 'http://example.com/',
+                                       '200 OK', [('X-Capture', str(i))], date)
+            writer.write_request_response_pair(make_req(date), resp)
+
+        records = list(ArchiveIterator(writer.get_stream()))
+        assert [rec.rec_type for rec in records] == \
+                ['response', 'request', 'revisit', 'request']
+

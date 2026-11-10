@@ -11,13 +11,31 @@ from warcio.statusandheaders import StatusAndHeadersParser
 # ============================================================================
 class BaseWARCWriter(RecordBuilder):
 
+    # record types eligible for duplicate payload detection
+    DEDUP_RECORD_TYPES = ('response', 'resource')
+
     def __init__(self, gzip=True, *args, **kwargs):
         super(BaseWARCWriter, self).__init__(warc_version=kwargs.get('warc_version'),
-                                             header_filter=kwargs.get('header_filter'))
+                                             header_filter=kwargs.get('header_filter'),
+                                             digest_algorithm=kwargs.get('digest_algorithm', 'sha1'))
         self.gzip = gzip
         self.hostname = gethostname()
 
         self.parser = StatusAndHeadersParser([], verify=False)
+
+        # optional duplicate payload handling:
+        # when enabled, a record whose payload digest matches an already
+        # written record is stored as a revisit record instead
+        self.dedup = kwargs.get('dedup', False)
+
+        # if True (default), only records for the same WARC-Target-URI are
+        # considered duplicates; if False, identical payloads are shared
+        # across different URIs as well
+        self.dedup_per_url = kwargs.get('dedup_per_url', True)
+
+        # maps dedup key -> (WARC-Target-URI, WARC-Date) of the original
+        # record, populated only after the original was written successfully
+        self._dedup_index = {}
 
     def write_request_response_pair(self, req, resp, params=None):
         url = resp.rec_headers.get_header('WARC-Target-URI')
@@ -37,6 +55,82 @@ class BaseWARCWriter(RecordBuilder):
 
     def _do_write_req_resp(self, req, resp, params):  #pragma: no cover
         raise NotImplemented()
+
+    def _dedup_key(self, record, digest):
+        if self.dedup_per_url:
+            return (record.rec_headers.get_header('WARC-Target-URI'), digest)
+        return digest
+
+    def _apply_dedup(self, record):
+        """
+        Check record against the dedup index.
+
+        Equality scope: the payload digest (computed with
+        self.digest_algorithm over the payload bytes only, excluding HTTP
+        status line and headers), optionally scoped to the record's
+        WARC-Target-URI (see dedup_per_url).
+
+        Returns (record_to_write, dedup_key). If a duplicate is found,
+        record_to_write is a revisit record referring to the original and
+        dedup_key is None. Otherwise record_to_write is the original record
+        and dedup_key must be registered in the index after the record has
+        been written successfully.
+        """
+        if record.rec_type not in self.DEDUP_RECORD_TYPES:
+            return record, None
+
+        # empty payloads are not worth a revisit record
+        if not record.payload_length:
+            return record, None
+
+        digest = record.rec_headers.get_header('WARC-Payload-Digest')
+        if digest and not digest.startswith(self.digest_algorithm + ':'):
+            # existing digest uses a different algorithm, recompute
+            record.rec_headers.remove_header('WARC-Payload-Digest')
+            digest = None
+
+        if not digest:
+            self.ensure_digest(record, block=False, payload=True)
+            digest = record.rec_headers.get_header('WARC-Payload-Digest')
+
+        if not digest:
+            return record, None
+
+        key = self._dedup_key(record, digest)
+        refers_to = self._dedup_index.get(key)
+        if refers_to is None:
+            return record, key
+
+        # duplicate payload: write a revisit record instead, keeping this
+        # capture's HTTP status line, headers and WARC-Date
+        warc_headers_dict = {}
+        date = record.rec_headers.get_header('WARC-Date')
+        if date:
+            warc_headers_dict['WARC-Date'] = date
+
+        revisit = self.create_revisit_record(
+                record.rec_headers.get_header('WARC-Target-URI'),
+                digest,
+                refers_to_uri=refers_to[0],
+                refers_to_date=refers_to[1],
+                http_headers=record.http_headers,
+                warc_headers_dict=warc_headers_dict)
+
+        return revisit, None
+
+    def _write_record_dedup(self, out, record):
+        dedup_key = None
+        if self.dedup:
+            record, dedup_key = self._apply_dedup(record)
+
+        self._write_warc_record(out, record)
+
+        # register only after a successful write, so that a failed write
+        # can never leave a later revisit referring to a missing payload
+        if dedup_key is not None:
+            self._dedup_index[dedup_key] = (
+                    record.rec_headers.get_header('WARC-Target-URI'),
+                    record.rec_headers.get_header('WARC-Date'))
 
     def _write_warc_record(self, out, record):
         if self.gzip:
@@ -134,10 +228,10 @@ class WARCWriter(BaseWARCWriter):
         self.out = filebuf
 
     def write_record(self, record, params=None):
-        self._write_warc_record(self.out, record)
+        self._write_record_dedup(self.out, record)
 
     def _do_write_req_resp(self, req, resp, params):
-        self._write_warc_record(self.out, resp)
+        self._write_record_dedup(self.out, resp)
         self._write_warc_record(self.out, req)
 
 
