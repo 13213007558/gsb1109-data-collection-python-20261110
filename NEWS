@@ -1,6 +1,20 @@
 w3lib release notes
 ===================
 
+2.7.0 (unreleased)
+------------------
+
+New features:
+
+- Added the :mod:`w3lib.link` module with :func:`~w3lib.link.parse_link_header`
+  to parse ``Link`` header fields (RFC 8288) and
+  :func:`~w3lib.link.select_pagination_link` to pick the pagination target of
+  one collection out of a response whose ``Link`` headers may carry links for
+  several collections.  Relative targets, ``anchor`` parameters, multi-value
+  ``rel`` parameters and duplicate declarations are all taken into account;
+  the result distinguishes "no match" from "conflicting matches" and keeps
+  the original declarations for inspection.
+
 2.6.0 (2026-11-05)
 ------------------
 
