@@ -1,6 +1,25 @@
 w3lib release notes
 ===================
 
+2.7.0 (unreleased)
+------------------
+
+New features:
+
+- Added :func:`~w3lib.http.content_disposition_filename`, which parses the
+  filename out of a ``Content-Disposition`` header. It supports the ordinary
+  ``filename`` parameter, the RFC 5987 extended ``filename*`` parameter and the
+  continued ``filename*0*``, ``filename*1*`` ... family, including non-ASCII
+  names. It returns a :class:`~w3lib.http.ContentDispositionFilename` with the
+  chosen filename, the reason it was chosen, every ordinary candidate and the
+  positions of malformed extended parameters
+  (:class:`~w3lib.http.ContentDispositionError`). Semicolons inside quoted
+  values do not split parameters; duplicate continuation numbers, missing
+  sections and conflicting charset declarations are rejected instead of being
+  joined into another file's name. The new ``fallback_to_basic`` parameter
+  controls whether an unusable extended form may fall back to the ordinary
+  ``filename``. Only metadata is returned; nothing is written to disk.
+
 2.6.0 (2026-11-05)
 ------------------
 
