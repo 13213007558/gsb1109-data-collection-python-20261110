@@ -1,6 +1,18 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+--------------
+(unreleased)
+
+* Added ``SizedQueue``, a capacity-bounded queue metered by the declared size
+  of each ``SizedTask``. It can reject tasks that do not fit or evict
+  lower-value waiting tasks, with the eviction priority, same-value order and
+  non-evictable (pinned) tasks defined by configuration. An oversized task is
+  rejected and can never empty the queue through eviction. Every rejection or
+  eviction returns the complete tasks to the caller, and the task,
+  configuration and statistics state is persisted across restarts
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

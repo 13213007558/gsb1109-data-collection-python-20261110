@@ -20,7 +20,8 @@ Queuelib is a Python library that implements object collections which are stored
 in memory or persisted to disk, provide a simple API, and run fast.
 
 Queuelib provides collections for queues_ (FIFO), stacks_ (LIFO), queues
-sorted by priority and queues that are emptied in a round-robin_ fashion.
+sorted by priority, queues that are emptied in a round-robin_ fashion, and a
+capacity-bounded queue metered by the declared size of its tasks.
 
 .. note:: Queuelib collections are not thread-safe.
 
@@ -147,6 +148,111 @@ And use it::
     b'b'
     >>> rr.pop()
     b'd'
+
+SizedQueue
+==========
+
+``SizedQueue`` is a capacity-bounded queue for bursty producers. The other
+queues only bound the number of items they hold; this one bounds the total
+*declared size* of the waiting tasks, so a sudden flood of large tasks cannot
+grow memory or disk usage without limit.
+
+Every task is wrapped in a ``SizedTask`` carrying an exact, caller-declared
+``size``. That number is treated as an opaque unit and is never estimated from
+the object or its serialized form, so two tasks with the same ``size`` cost
+the same capacity regardless of what they contain::
+
+    >>> from queuelib import SizedQueue, SizedQueueConfig, SizedTask
+    >>> import pathlib, tempfile
+    >>> path = pathlib.Path(tempfile.mkdtemp()) / "sized"
+    >>> q = SizedQueue(path, SizedQueueConfig(capacity=10))
+    >>> q.push(SizedTask(item="a", size=6)).accepted
+    True
+
+Rejecting tasks
+---------------
+
+With the default ``OverflowPolicy.REJECT`` a task that does not fit is not
+admitted. ``push()`` always returns a ``PushResult`` that hands the rejected
+task back to the caller in full, together with a machine-readable ``reason``::
+
+    >>> result = q.push(SizedTask(item="b", size=5))
+    >>> result.accepted
+    False
+    >>> result.reason
+    'full'
+    >>> result.rejected.item
+    'b'
+    >>> len(q), q.used
+    (1, 6)
+
+Evicting lower-value tasks
+--------------------------
+
+With ``OverflowPolicy.EVICT`` the queue removes waiting tasks until the new
+one fits. Which tasks go first is fully determined by the configuration:
+``eviction_priority`` selects the value level to reclaim, and
+``eviction_order`` breaks ties between tasks of the same priority. The
+default ``EvictionPriority.LOWEST_VALUE`` treats the smallest task
+``priority`` number as the lowest value and evicts it first;
+``EvictionPriority.HIGHEST_VALUE`` inverts that, matching the scale of
+:class:`~queuelib.pqueue.PriorityQueue`. The default order is
+``EvictionOrder.FIFO`` (oldest first), with ``EvictionOrder.LIFO`` available.
+A task created with ``pinned=True`` is never evicted::
+
+    >>> from queuelib import OverflowPolicy
+    >>> evict_path = pathlib.Path(tempfile.mkdtemp()) / "evicting"
+    >>> cfg = SizedQueueConfig(capacity=10, on_full=OverflowPolicy.EVICT)
+    >>> q = SizedQueue(evict_path, cfg)
+    >>> q.push(SizedTask(item="low", size=4, priority=1)).accepted
+    True
+    >>> q.push(SizedTask(item="high", size=6, priority=9)).accepted
+    True
+    >>> result = q.push(SizedTask(item="incoming", size=4, priority=5))
+    >>> [task.item for task in result.evicted]
+    ['low']
+    >>> result.accepted
+    True
+
+Every task removed to make room is returned in ``result.evicted``, and
+``result.returned`` combines the evicted tasks with the rejected incoming
+task (if any), so the caller always receives the complete objects it can no
+longer find in the queue.
+
+A task whose declared size exceeds the whole capacity can never be admitted.
+It is rejected with the ``"oversized"`` reason and triggers no eviction, so
+one oversized task cannot empty the queue through repeated removals::
+
+    >>> result = q.push(SizedTask(item="huge", size=11))
+    >>> result.reason
+    'oversized'
+    >>> result.evicted
+    []
+
+Statistics and persistence
+--------------------------
+
+The queue keeps cumulative counters in ``stats``: ``submitted``,
+``accepted``, ``rejected`` and ``evicted``. They survive ``clear()`` (which
+only removes the waiting tasks) and process restarts. The whole state is
+stored as JSON under the path given on construction and rewritten atomically
+after every change, so reopening the same path restores the tasks, the
+configuration and the counters; passing a different configuration for an
+existing path raises ``ValueError``::
+
+    >>> q.stats
+    SizedQueueStats(submitted=4, accepted=3, rejected=1, evicted=1)
+    >>> q.close()
+    >>> reopened = SizedQueue(evict_path)
+    >>> reopened.stats
+    SizedQueueStats(submitted=4, accepted=3, rejected=1, evicted=1)
+    >>> [task.item for task in (reopened.pop(), reopened.pop()) if task]
+    ['high', 'incoming']
+
+Because state is JSON, task items must be JSON-serializable; a
+non-serializable item raises ``TypeError`` before any state changes. The file
+layout is an implementation detail that may change between releases, in the
+same way as for the disk queues above.
 
 Clearing a queue
 ================

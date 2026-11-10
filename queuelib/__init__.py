@@ -10,14 +10,38 @@ from queuelib.queue import (
     LifoSQLiteQueue,
 )
 from queuelib.rrqueue import RoundRobinQueue
+from queuelib.sizedqueue import (
+    REASON_FULL,
+    REASON_NO_EVICTABLE,
+    REASON_OVERSIZED,
+    EvictionOrder,
+    EvictionPriority,
+    OverflowPolicy,
+    PushResult,
+    SizedQueue,
+    SizedQueueConfig,
+    SizedQueueStats,
+    SizedTask,
+)
 
 __all__ = [
+    "REASON_FULL",
+    "REASON_NO_EVICTABLE",
+    "REASON_OVERSIZED",
+    "EvictionOrder",
+    "EvictionPriority",
     "FifoDiskQueue",
     "FifoMemoryQueue",
     "FifoSQLiteQueue",
     "LifoDiskQueue",
     "LifoMemoryQueue",
     "LifoSQLiteQueue",
+    "OverflowPolicy",
     "PriorityQueue",
+    "PushResult",
     "RoundRobinQueue",
+    "SizedQueue",
+    "SizedQueueConfig",
+    "SizedQueueStats",
+    "SizedTask",
 ]
