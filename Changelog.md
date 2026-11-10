@@ -1,5 +1,19 @@
 # Changelog
 
+### 0.15.0 (unreleased)
+
+Added an opt-in object-graph export format, `dump_graph()` and `load_graph()`,
+along with the `GRAPH_FORMAT` constant and the `GraphExportError` exception.
+Unlike `ItemAdapter.asdict()`, which always expands objects into a tree, the
+graph format preserves reference cycles and distinguishes a shared object from
+two equal-but-distinct objects. Each item and container is serialized once as a
+node with a stable, export-local identifier that does not expose memory
+addresses, and references point at those nodes.
+
+`load_graph()` only instantiates record types that the caller registers, either
+as an iterable of classes or a type-name-to-class mapping; unknown record
+types, dangling references and malformed documents are rejected.
+
 ### 0.14.0 (2026-10-29)
 
 Removed support for Python 3.9 and 3.10, and added support for Python 3.15

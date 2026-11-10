@@ -146,6 +146,62 @@ but it doesn't traverse the object recursively converting nested items:
 >>>
 ```
 
+### Exporting object graphs
+
+`asdict()` expands objects into a plain tree, so it cannot represent reference
+cycles or tell a shared object apart from two equal objects. For such graphs
+use the opt-in `dump_graph()` and `load_graph()` functions instead:
+
+```python
+>>> from dataclasses import dataclass, field
+>>> from itemadapter import dump_graph, load_graph
+>>> @dataclass
+... class Address:
+...     city: str
+>>> @dataclass
+... class Shop:
+...     name: str
+...     address: Address
+...     products: list = field(default_factory=list)
+>>> @dataclass
+... class Product:
+...     name: str
+...     shop: Shop | None = None
+>>> address = Address("Berlin")
+>>> shop = Shop("megastore", address)
+>>> shop.products.append(Product("phone", shop))
+>>> document = dump_graph(shop)
+>>> document["root"]
+{'ref': 'node-1'}
+>>> document["nodes"]["node-1"]["type"]
+'Shop'
+>>> document["nodes"]["node-1"]["fields"]["address"]
+{'ref': 'node-2'}
+>>>
+```
+
+Every item and container (`dict`, `list`, `tuple`, `set` and `frozenset`)
+becomes a node with a stable, export-local identifier such as `node-1`;
+identifiers never expose memory addresses. References point at those nodes, so
+cycles are encoded as back references, a shared object is serialized only once,
+and two equal-but-distinct objects still get two separate nodes. The document
+holds plain data only and can be passed to `json.dumps()`.
+
+Restoration only instantiates the record types that the caller registers. The
+registry is either an iterable of classes or a `{type_name: class}` mapping:
+
+```python
+>>> restored = load_graph(document, [Address, Shop, Product])
+>>> restored.products[0].shop is restored
+True
+>>> restored.products[0].shop.address is restored.address
+True
+>>>
+```
+
+Unknown record types, bad references and malformed documents raise
+`GraphExportError`.
+
 ---
 
 ## API reference
@@ -356,6 +412,40 @@ with the names of all the defined fields for the item.
 
 Return a `dict` object with the contents of the adapter. This works slightly different than
 calling `dict(adapter)`, because it's applied recursively to nested items (if there are any).
+
+Note that `asdict()` always produces a tree: a shared object is duplicated at every place it
+appears, and reference cycles cannot be represented. Use `dump_graph()` when object identity
+or cycles must be preserved.
+
+
+### function `itemadapter.dump_graph(obj: Any) -> dict`
+
+Serialize an object graph into a plain-data document (suitable for `json.dumps()`). Every
+item and every `dict`, `list`, `tuple`, `set` or `frozenset` container becomes a node with a
+stable, export-local identifier; references point at those nodes. Cycles are encoded as back
+references, a shared object is serialized once, and equal-but-distinct objects get distinct
+nodes. Nested `ItemAdapter` objects are unwrapped to the items they hold.
+
+
+### function `itemadapter.load_graph(document: Any, registry) -> Any`
+
+Restore an object graph from a document produced by `dump_graph()`. `registry` is an
+iterable of the allowed record classes, or a mapping of record type names to classes.
+Only registered record types are instantiated; unknown record types, dangling references
+and malformed documents raise `itemadapter.GraphExportError`. The identity relationships
+encoded in the document, including cycles and shared objects, are reconstructed.
+
+
+### constant `itemadapter.GRAPH_FORMAT`
+
+The value stored under the `"format"` key of every graph document
+(currently `"itemadapter-graph/1"`). Documents carrying any other value are rejected by
+`load_graph()`.
+
+
+### exception `itemadapter.GraphExportError`
+
+Subclass of `ValueError`, raised when a graph document cannot be exported or restored.
 
 
 ### function `itemadapter.utils.is_item(obj: Any) -> bool`
