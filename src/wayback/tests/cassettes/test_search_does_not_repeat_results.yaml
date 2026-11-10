@@ -1,0 +1,56 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      User-Agent:
+      - wayback/0.3.3.post6.dev0+ga3e1512 (+https://github.com/edgi-govdata-archiving/wayback)
+    method: GET
+    uri: https://web.archive.org/cdx/search/cdx?url=energystar.gov%2F&limit=1000&from=20200612000000&to=20200613000000&showResumeKey=true&resolveRevisits=true
+  response:
+    body:
+      string: !!binary |
+        H4sIAAAAAAAAAL3UwUvDMBTH8fv+ilwFXZL3ktfprXOFKqW4Uq3dbUjpBuqkDa3+97a7DATfGITe
+        Wz78ki+pD9119Vk19U/rts2VFKBAKdKgtFEqEDvnvu6kPH0yrw+dFK76dnLnPt4FKi3iJM0oLF6K
+        8v4ZyzBKS4zLOHl4SouU6DUQBmFWc5I2R6kdqL7v53+5ftu8yabq9u3eiRuxWoaYGms22cbAOlpG
+        mV1nOSKsHvM8yawgRYxH2hr0tgx5yYLnZfZ/Tw/nqGmKOxsl8L0sYDyNZIn1TvOGX85zFojzwC6m
+        qX+UztR/4TI+EWsC8JcIE/8oIfodxtzYMclbr4WYgDnIwVugb08zHgJqNVknIwf+Hkk1+wUMuvHv
+        aQYAAA==
+    headers:
+      Connection:
+      - keep-alive
+      Content-Type:
+      - text/plain;charset=UTF-8
+      Date:
+      - Wed, 26 Oct 2022 22:56:17 GMT
+      Permissions-Policy:
+      - interest-cohort=()
+      Referrer-Policy:
+      - no-referrer-when-downgrade
+      Server:
+      - nginx/1.19.5
+      Transfer-Encoding:
+      - chunked
+      X-NA:
+      - '0'
+      X-NID:
+      - '-'
+      X-Page-Cache:
+      - BYPASS
+      X-RL:
+      - '0'
+      X-location:
+      - cdx
+      content-encoding:
+      - gzip
+      x-app-server:
+      - wwwb-app14
+      x-tr:
+      - '120'
+      x-ts:
+      - '200'
+    status:
+      code: 200
+      message: OK
+version: 1

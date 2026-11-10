@@ -1,0 +1,171 @@
+version: 2.1
+
+parameters:
+  # Use this Python version for basic, non-matrix jobs.
+  primary-python-version:
+    type: string
+    default: "3.14"
+
+commands:
+  setup_pip:
+    description: "Set Up Dependencies"
+    parameters:
+      urllib3-version:
+        type: string
+        default: "2.0"
+      install-dev:
+        description: Install dev dependencies (not just test dependencies)
+        type: boolean
+        default: false
+      install-docs:
+        description: Install docs dependencies
+        type: boolean
+        default: false
+    steps:
+      - run:
+          name: Get Python Version
+          command: |
+            python \
+              -c 'import sys;print(sys.version.split(" ")[0] + ("t" if "free-threading" in sys.version else ""))' \
+              > /home/circleci/.tmp-python-version
+
+      - restore_cache:
+          keys:
+            - cache_v11-wayback-{{ checksum "/home/circleci/.tmp-python-version" }}-{{ arch }}-{{ checksum "pyproject.toml" }}
+            - cache_v11-wayback-{{ checksum "/home/circleci/.tmp-python-version" }}-{{ arch }}-
+
+      - run:
+          name: Install Dependencies
+          command: |
+            python -m venv ~/venv
+            . ~/venv/bin/activate
+            # Ensure pip is up-to-date
+            pip install --upgrade pip
+            pip install .[test]
+            pip install 'urllib3 ~=<< parameters.urllib3-version >>'
+
+      # Dev dependencies are only compatible on Python 3.8+, so only install
+      # them on demand.
+      - when:
+          condition: << parameters.install-dev >>
+          steps:
+            - run:
+                command: |
+                  . ~/venv/bin/activate
+                  pip install .[dev]
+
+      # Docs dependencies are only compatible on some Python versions, so only
+      # install them on demand.
+      - when:
+          condition: << parameters.install-docs >>
+          steps:
+            - run:
+                command: |
+                  . ~/venv/bin/activate
+                  pip install .[docs]
+
+      - save_cache:
+          key: cache_v11-wayback-{{ checksum "/home/circleci/.tmp-python-version" }}-{{ arch }}-{{ checksum "pyproject.toml" }}
+          paths:
+            - ~/venv
+
+jobs:
+  test:
+    parameters:
+      base-image:
+        type: string
+        default: cimg/python
+      python-version:
+        type: string
+      urllib3-version:
+        type: string
+
+    working_directory: ~/wayback
+    docker:
+      - image: << parameters.base-image >>:<< parameters.python-version >>
+    steps:
+      - checkout
+      - setup_pip:
+          urllib3-version: << parameters.urllib3-version >>
+
+      - run:
+          name: Tests
+          command: |
+            . ~/venv/bin/activate
+            coverage run -m pytest -vv
+      - run:
+          name: Coverage
+          command: |
+            . ~/venv/bin/activate
+            coverage report -m
+
+  lint:
+    working_directory: ~/wayback
+    docker:
+      - image: cimg/python:<< pipeline.parameters.primary-python-version >>
+    steps:
+      - checkout
+      - setup_pip:
+          install-dev: true
+      - run:
+          name: Code linting
+          command: |
+            . ~/venv/bin/activate
+            ruff check
+      - run:
+          name: Code formatting
+          command: |
+            . ~/venv/bin/activate
+            ruff format --check
+
+  typecheck:
+    working_directory: ~/wayback
+    docker:
+      - image: cimg/python:<< pipeline.parameters.primary-python-version >>
+    steps:
+      - checkout
+      - setup_pip:
+          install-dev: true
+      - run:
+          name: Type checking
+          command: |
+            . ~/venv/bin/activate
+            mypy
+
+  # NOTE: The docs are mainly built and published directly by readthedocs.com.
+  # This job is meant to verify there are no issues with the docs and it is NOT
+  # responsible for building what actually gets published. (Readthedocs.com
+  # builds with rather loose error handling, and does not fail even when there
+  # may be significant issues.)
+  docs:
+    working_directory: ~/wayback
+    docker:
+      - image: cimg/python:<< pipeline.parameters.primary-python-version >>
+    steps:
+      - checkout
+      - setup_pip:
+          install-docs: true
+      - run:
+          name: Build docs
+          command: |
+            . ~/venv/bin/activate
+            make -C docs html
+
+workflows:
+  ci:
+    jobs:
+      - test:
+          matrix:
+            parameters:
+              python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+              urllib3-version: ["1.20", "2.0"]
+      # Disabled until pre-releases of 3.16 start getting published.
+      # - test:
+      #     matrix:
+      #       parameters:
+      #         base-image: ["mr0grog/circle-python-pre"]
+      #         python-version: ["3.15.0rc2", "3.15.0rc2t"]
+      #         urllib3-version: ["1.20", "2.0"]
+      - lint
+      - typecheck
+      - docs

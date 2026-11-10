@@ -1,0 +1,521 @@
+from datetime import datetime
+from enum import Enum
+from typing import NamedTuple, Optional
+from urllib.parse import urljoin
+from warnings import warn
+from ._utils import CaseInsensitiveDict, memento_url_data, format_memento_url
+
+
+class Mode(Enum):
+    """
+    An enum describing the playback mode of a memento. When requesting a
+    memento (e.g. with :meth:`wayback.WaybackClient.get_memento`), you can use
+    these values to determine how the response body should be formatted.
+
+    For more details, see:
+    https://archive-access.sourceforge.net/projects/wayback/administrator_manual.html#Archival_URL_Replay_Mode
+
+    Examples
+    --------
+    >>> waybackClient.get_memento('https://noaa.gov/',
+    >>>                           timestamp=datetime.datetime(2018, 1, 2),
+    >>>                           mode=wayback.Mode.view)
+
+    **Values**
+
+    .. py:attribute:: original
+
+        Returns the HTTP response body as originally captured.
+
+    .. py:attribute:: view
+
+        Formats the response body so it can be viewed with a web
+        browser. URLs for links and subresources like scripts, stylesheets,
+        images, etc. will be modified to point to the equivalent memento in the
+        Wayback Machine so that the resulting page looks as similar as possible
+        to how it would have appeared when originally captured. It's mainly meant
+        for use with HTML pages. This is the playback mode you typically use when
+        browsing the Wayback Machine with a web browser.
+
+    .. py:attribute:: javascript
+
+        Formats the response body by updating URLs, similar
+        to ``Mode.view``, but designed for JavaScript instead of HTML.
+
+    .. py:attribute:: css
+
+        Formats the response body by updating URLs, similar to
+        ``Mode.view``, but designed for CSS instead of HTML.
+
+    .. py:attribute:: image
+
+        formats the response body similar to ``Mode.view``, but
+        designed for image files instead of HTML.
+    """
+
+    original = 'id_'
+    view = ''
+    javascript = 'js_'
+    css = 'cs_'
+    image = 'im_'
+
+
+class CdxRecord(NamedTuple):
+    """
+    Represents an entry from Wayback's "CDX" index of mementos (archived HTTP
+    responses). These entries contain some metadata about the memento. You can
+    also pass a ``CdxRecord`` to :meth:`WaybackClient.get_memento` to
+    retrieve the corresponding memento.
+
+    In general, you should not create new instances of ``CdxRecord`` yourself,
+    but should get them by calling :meth:`WaybackClient.search`.
+
+    **Attributes**
+
+    .. py:attribute:: urlkey
+       :type: str
+
+       SURT-formatted URL.
+
+    .. py:attribute:: timestamp
+       :type: datetime
+
+       The capture time represented as a :class:`datetime.datetime`, such as
+       :data:`datetime.datetime(1996, 12, 31, 23, 58, 47, tzinfo=timezone.utc)`.
+
+    .. py:attribute:: original
+       :type: str
+
+       The URL that was captured by this record, such as
+       :data:`'http://www.nasa.gov/'`.
+
+    .. py:attribute:: mimetype
+       :type: str
+
+       MIME type of record, such as :data:`'text/html'`, :data:`'warc/revisit'` or
+       :data:`'unk'` ("unknown") if this information was not captured.
+
+    .. py:attribute:: statuscode
+       :type: Optional[int]
+
+       Status code returned by the server when the record was captured, such as
+       :data:`200`. This is may be :data:`None` if the record is a revisit record.
+
+    .. py:attribute:: digest
+       :type: str
+
+       The base 32-encoded SHA-1 hash of the archived HTTP response body. This
+       can be useful for comparing to other ``CdxRecord`` instances or avoiding
+       duplicate requests for mementos.
+
+       Please keep in mind that this digest is generally computed based on the
+       response body *as stored on disk* (usually the exact bytes originally
+       received when saving the response), so is not useful for validation
+       or fixity checks against a memento loaded with
+       :meth:`WaybackClient.get_memento`. For example, if the response body was
+       stored in brotli-compressed form but *transferred to you* in
+       gzip-compressed form, your bytes will not match this digest.
+
+       For revisit records, this is the digest of the originally received HTTP
+       response body as it *would have been stored*, so you can use it to match
+       a non-revisit record containing the same response body. (But keep in
+       mind this is just the body. It does not include HTTP headers, which may
+       have been different for two records with the same digest.)
+
+    .. py:attribute:: length
+       :type: Optional[int]
+
+       Size (in bytes) of the archived data *as stored on disk*. Like
+       :attr:`digest`, this usually will not be useful for external users,
+       since it does not reflect the actual archived HTTP response body size.
+       For example, revisit records will generally be small because the
+       archived data on disk is just a pointer to a different record that was
+       saved previously.
+
+    .. py:attribute:: raw_url
+       :type: str
+
+       The URL to the raw captured content, such as
+       :data:`'https://web.archive.org/web/19961231235847id_/http://www.nasa.gov/'`.
+
+    .. py:attribute:: view_url
+       :type: str
+
+       The URL to the public view on Wayback Machine. In this view, the links and
+       some subresources in the document are rewritten to point to Wayback URLs.
+       There is also a navigation panel around the content. Example URL:
+       :data:`'https://web.archive.org/web/19961231235847/http://www.nasa.gov/'`.
+
+    .. py:attribute:: key
+       :type: str
+
+       .. deprecated:: 0.5.0
+          This attribute was renamed to :attr:`urlkey`. This name will be
+          removed in a future release.
+
+    .. py:attribute:: url
+       :type: str
+
+       .. deprecated:: 0.5.0
+          This attribute was renamed to :attr:`original`. This name will be
+          removed in a future release.
+
+    .. py:attribute:: mime_type
+       :type: str
+
+       .. deprecated:: 0.5.0
+          This attribute was renamed to :attr:`mimetype`. This name will be
+          removed in a future release.
+
+    .. py:attribute:: status_code
+       :type: str
+
+       .. deprecated:: 0.5.0
+          This attribute was renamed to :attr:`statuscode`. This name will be
+          removed in a future release.
+    """
+
+    urlkey: str
+    timestamp: datetime
+    original: str
+    mimetype: str
+    statuscode: Optional[int]
+    digest: str
+    length: Optional[int]
+
+    @property
+    def key(self) -> str:
+        warn('The `key` attribute on `CdxRecord` was renamed to `urlkey`.', DeprecationWarning, stacklevel=2)
+        return self.urlkey
+
+    @property
+    def url(self) -> str:
+        warn('The `url` attribute on `CdxRecord` was renamed to `original`.', DeprecationWarning, stacklevel=2)
+        return self.original
+
+    @property
+    def mime_type(self) -> str:
+        warn(
+            'The `mime_type` attribute on `CdxRecord` was renamed to `mimetype`.', DeprecationWarning, stacklevel=2
+        )
+        return self.mimetype
+
+    @property
+    def status_code(self) -> Optional[int]:
+        warn(
+            'The `status_code` attribute on `CdxRecord` was renamed to `statuscode`.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.statuscode
+
+    @property
+    def raw_url(self) -> str:
+        return format_memento_url(self.original, self.timestamp, mode=Mode.original.value)
+
+    @property
+    def view_url(self) -> str:
+        return format_memento_url(self.original, self.timestamp, mode=Mode.view.value)
+
+
+# NOTE: We use `py:attribute::` listings instead of the standard Numpy
+# "Attributes" section (which is formatted like function parameters) because it
+# doesn't do a great job of handling properties. See this issue:
+# https://github.com/numpy/numpydoc/issues/299
+class Memento:
+    """
+    Represents a memento (an archived HTTP response). This object is similar to
+    a response object from the popular "Requests" package, although it has some
+    differences designed to differentiate historical information vs. current
+    metadata about the stored memento (for example, the ``headers`` attribute
+    lists the headers recorded in the memento, and does not include additional
+    headers that provide metadata about the Wayback Machine).
+
+    Note that, like an HTTP response, this object represents a potentially open
+    network connection to the Wayback Machine. Reading the ``content`` or
+    ``text`` attributes will read all the data being received and close the
+    connection automatically, but if you do not read those properties, you must
+    make sure to call ``close()`` to close to connection. Alternatively, you
+    can use a Memento as a context manager. The connection will be closed for
+    you when the context ends:
+
+        >>> with a_memento:
+        >>>     do_something()
+        >>> # Connection is automatically closed here.
+
+    **Fields**
+
+    .. py:attribute:: encoding
+        :type: str
+
+        The text encoding of the response, e.g. ``'utf-8'``.
+
+    .. py:attribute:: headers
+        :type: dict
+
+        A dict representing the headers of the archived HTTP response. The keys
+        are case-insensitive. If you iterate over it, you will receive the
+        header names as they were originally sent. However, you can look them
+        up via strings that vary in upper/lower-case. For example::
+
+          list(memento.headers) == ['Content-Type', 'Date']
+          memento.headers['Content-Type'] == memento.headers['content-type']
+
+    .. py:attribute:: history
+        :type: tuple[wayback.Memento]
+
+        A list of :class:`wayback.Memento` objects that were redirects and were
+        followed to produce this memento.
+
+    .. py:attribute:: debug_history
+        :type: tuple[str]
+
+        List of all URLs redirects followed in order to produce this memento.
+        These are "memento URLs" -- that is, they are absolute URLs to the
+        Wayback machine like
+        ``https://web.archive.org/web/20180816111911id_/http://www.noaa.gov/``,
+        rather than URLs of captured redirects, like ``http://www.noaa.gov``.
+        Many of the URLs in this list do not represent actual mementos.
+
+    .. py:attribute:: status_code
+        :type: int
+
+        The HTTP status code of the archived HTTP response.
+
+    .. py:attribute:: mode
+        :type: str
+
+        The playback mode used to produce the Memento.
+
+    .. py:attribute:: timestamp
+        :type: datetime.datetime
+
+        The time the memento was originally captured. This includes ``tzinfo``,
+        and will always be in UTC.
+
+    .. py:attribute:: url
+        :type: str
+
+        The URL that the memento represents, e.g. ``http://www.noaa.gov``.
+
+    .. py:attribute:: memento_url
+        :type: str
+
+        The URL at which the memento was fetched from the Wayback Machine, e.g.
+        ``https://web.archive.org/web/20180816111911id_/http://www.noaa.gov/``.
+
+    .. py:attribute:: ok
+        :type: bool
+
+        Whether the response had an non-error status (i.e. < 400).
+
+    .. py:attribute:: is_redirect
+        :type: bool
+
+        Whether the response was a redirect (i.e. had a 3xx status).
+
+    .. py:attribute:: content
+        :type: bytes
+
+        The body of the archived HTTP response in bytes.
+
+    .. py:attribute:: text
+        :type: str
+
+        The body of the archived HTTP response decoded as a string.
+
+    .. py:attribute:: links
+        :type: dict of (str, dict of (str, str))
+
+        Related links to this Memento (e.g. the previous and/or next Memento in
+        time). The keys are the relationship (e.g. ``'prev memento'``) as a
+        string and the values are dicts where the keys and values are strings.
+
+        In each entry, the ``'url'`` key is the URL of the related link, the
+        ``'rel'`` key is the relationship (the same as the key in the top-level
+        dict), and the rest of the keys will be any other attributes that are
+        relevant for that link (e.g. ``'datetime'`` or ``'type'``).
+
+        For example::
+
+          {
+              'original': {
+                  'url': 'https://www.fws.gov/birds/',
+                  'rel': 'original'
+              },
+              'first memento': {
+                  'url': 'https://web.archive.org/web/20050323155300/http://www.fws.gov:80/birds',
+                  'rel': 'first memento',
+                  'datetime': 'Wed, 23 Mar 2005 15:53:00 GMT'
+              },
+              'prev memento': {
+                  'url': 'https://web.archive.org/web/20210125125216/https://www.fws.gov/birds/',
+                  'rel': 'prev memento',
+                  'datetime': 'Mon, 25 Jan 2021 12:52:16 GMT'
+              },
+              'next memento': {
+                  'url': 'https://web.archive.org/web/20210321180831/https://www.fws.gov/birds',
+                  'rel': 'next memento',
+                  'datetime': 'Sun, 21 Mar 2021 18:08:31 GMT'
+              },
+              'last memento': {
+                  'url': 'https://web.archive.org/web/20221006031005/https://fws.gov/birds',
+                  'rel': 'last memento',
+                  'datetime': 'Thu, 06 Oct 2022 03:10:05 GMT'
+              }
+          }
+
+        Links to other mementos use the same mode as the memento object this
+        ``links`` attribute belongs to. For example::
+
+          raw_memento = client.get_memento('https://fws.gov/birds', '20210318004901')
+          raw_memento.links['next memento']['url'] == 'https://web.archive.org/web/20210321180831id_/https://fws.gov/birds'
+          # The "id_" after the timestamp means "original" mode ---------------------------------^^^
+
+          view_memento = client.get_memento('https://fws.gov/birds', '20210318004901', mode=Mode.view)
+          view_memento.links['next memento']['url'] == 'https://web.archive.org/web/20210321180831/https://fws.gov/birds'
+          # Nothing after the timestamp for "view" mode -----------------------------------------^
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        *,
+        url,
+        timestamp,
+        mode,
+        memento_url,
+        status_code,
+        headers,
+        encoding,
+        raw,
+        raw_headers,
+        links,
+        history,
+        debug_history,
+    ):
+        self.url = url
+        self.timestamp = timestamp
+        self.mode = mode
+        self.memento_url = memento_url
+        self.status_code = status_code
+        self.headers = headers
+        self.encoding = encoding
+        self._raw = raw
+        self._raw_headers = raw_headers
+        self.links = links
+
+        # Ensure we have non-mutable copies of history info.
+        self.history = tuple(history)
+        self.debug_history = tuple(debug_history)
+
+    @property
+    def ok(self):
+        """
+        Whether the response had an non-error status (i.e. < 400).
+
+        Returns
+        -------
+        boolean
+        """
+        return self.status_code < 400
+
+    @property
+    def is_redirect(self):
+        """
+        Whether the response was a redirect (i.e. had a 3xx status).
+
+        Returns
+        -------
+        boolean
+        """
+        return self.ok and self.status_code >= 300
+
+    @property
+    def content(self):
+        """
+        The body of the archived HTTP response in bytes.
+
+        Returns
+        -------
+        bytes
+        """
+        return self._raw.content
+
+    @property
+    def text(self):
+        """
+        The body of the archived HTTP response decoded as a string.
+
+        Returns
+        -------
+        str
+        """
+        return self._raw.text
+
+    def close(self):
+        """
+        Close the HTTP response for this Memento. This happens automatically if
+        you read ``content`` or ``text``, and if you use the memento as a
+        context manager. This method is always safe to call -- it does nothing
+        if the response has already been closed.
+        """
+        self._raw.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def __repr__(self):
+        return (
+            f'<{type(self).__module__.split("._", 1)[0]}'
+            f'.{type(self).__name__} url="{self.url}" '
+            f'timestamp="{self.timestamp.isoformat()}">'
+        )
+
+    @classmethod
+    def parse_memento_headers(cls, raw_headers, url='https://web.archive.org/'):
+        """
+        Extract historical headers from the Memento HTTP response's headers.
+
+        Parameters
+        ----------
+        raw_headers : dict
+            A dict of HTTP headers from the Memento's HTTP response.
+        url : str, optional
+            The URL of the resource the headers are being parsed for. It's used
+            when header data contains relative/incomplete URL information.
+
+        Returns
+        -------
+        dict
+        """
+        # Archived, historical headers are all reproduced as headers in the
+        # memento response, but start with "x-archive-orig-".
+        prefix = 'x-archive-orig-'
+        headers = CaseInsensitiveDict({
+            key[len(prefix) :]: value
+            for key, value in raw_headers.items()
+            if key.lower().startswith(prefix)
+        })  # fmt: skip
+
+        # Headers that are also needed for a browser to handle the played-back
+        # memento are *not* prefixed, so we need to copy over each of those.
+        # NOTE: Historical 'Content-Encoding' headers cannot be determined from
+        # the Wayback Machine; we shouldn't pick up `Content-Encoding` here.
+        for unprefixed in ('content-type',):
+            if unprefixed in raw_headers:
+                headers[unprefixed] = raw_headers[unprefixed]
+
+        # The `Location` header for a redirect does not have an x-archive-orig-
+        # version, and the normal location header point to the next *Wayback*
+        # URL, so we need to parse it to get the historical redirect URL.
+        if 'location' not in headers and 'location' in raw_headers:
+            # Some Wayback redirects provide a complete URL with a scheme and
+            # host in the `Location` header, not all do. Use `url` as a base
+            # URL if the value in the header is missing a scheme, host, etc.
+            raw_location = urljoin(url, raw_headers['location'])
+            headers['location'], _, _ = memento_url_data(raw_location)
+
+        return headers

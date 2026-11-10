@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+- package-ecosystem: pip
+  directory: "/"
+  schedule:
+    interval: monthly
+  allow:
+    - dependency-type: "development"
+  open-pull-requests-limit: 10
+  ignore:
+      # VCR v9+ is not compatible with urllib3 v1.x. Eventually we'll drop that
+      # version of urllib3, and then we can upgrade vcrpy.
+      - dependency-name: "vcrpy"
+        versions: [">=9.0.0"]
+
+- package-ecosystem: 'github-actions'
+  directory: '/'
+  schedule:
+    interval: 'monthly'

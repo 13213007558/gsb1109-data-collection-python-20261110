@@ -1,0 +1,53 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept-Encoding:
+      - gzip, deflate
+      User-Agent:
+      - wayback/0.3.3.post6.dev0+ga3e1512 (+https://github.com/edgi-govdata-archiving/wayback)
+    method: GET
+    uri: https://web.archive.org/cdx/search/cdx?url=nasa.gov&limit=1000&from=19961001000000&to=19970201000000&showResumeKey=true&resolveRevisits=true
+  response:
+    body:
+      string: !!binary |
+        H4sIAAAAAAAAAEvPL9PJSyxO1NRXMLS0NDM0MgYiUwsTc4WMkpICK3398vJyPZACvfT8MisLA32F
+        ktSKEv2MktwcBSMDAwVfd093NxP3IHd3N1N37zCzMD9nJ8cIf1dj/yBTp5AoZwVDC0NDrvRhZAsA
+        1PGqVjIBAAA=
+    headers:
+      Connection:
+      - keep-alive
+      Content-Type:
+      - text/plain;charset=UTF-8
+      Date:
+      - Wed, 26 Oct 2022 22:56:17 GMT
+      Permissions-Policy:
+      - interest-cohort=()
+      Referrer-Policy:
+      - no-referrer-when-downgrade
+      Server:
+      - nginx/1.19.5
+      Transfer-Encoding:
+      - chunked
+      X-NA:
+      - '0'
+      X-NID:
+      - '-'
+      X-Page-Cache:
+      - BYPASS
+      X-RL:
+      - '0'
+      X-location:
+      - cdx
+      content-encoding:
+      - gzip
+      x-app-server:
+      - wwwb-app52
+      x-tr:
+      - '81'
+      x-ts:
+      - '200'
+    status:
+      code: 200
+      message: OK
+version: 1
