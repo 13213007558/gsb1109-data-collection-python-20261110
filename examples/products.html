@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>商品列表</title></head>
+<body>
+  <main id="products">
+    <div class="product" data-sku="A-001">
+      <h2 class="title">Alpha 键盘</h2>
+      <span class="price">$10.00</span>
+      <ul class="tags"><li class="tag">外设</li><li class="tag">办公</li></ul>
+    </div>
+    <div class="product" data-sku="B-002">
+      <h2 class="title">Beta 鼠标</h2>
+      <!-- 缺价：这个商品没有 .price 节点 -->
+      <ul class="tags"><li class="tag">外设</li></ul>
+    </div>
+    <div class="product" data-sku="">
+      <h2 class="title">Gamma 显示器</h2>
+      <!-- 双价：同一商品出现两个价格 -->
+      <span class="price">$30.00</span>
+      <span class="price">$32.00</span>
+    </div>
+    <div class="product" data-sku="D-004">
+      <h2 class="title">Delta 套装</h2>
+      <span class="price">$99.00</span>
+      <!-- 嵌套卡片：内层商品的价格不能算到外层 -->
+      <div class="product" data-sku="D-004-A">
+        <h2 class="title">Delta 加购配件</h2>
+        <span class="price">$5.00</span>
+      </div>
+    </div>
+    <div class="product" data-sku="E-005">
+      <h2 class="title">Epsilon 耳机</h2>
+      <span class="price">$59.00</span>
+      <ul class="tags"><li class="tag">音频</li></ul>
+    </div>
+  </main>
+</body>
+</html>

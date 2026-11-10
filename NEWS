@@ -3,6 +3,17 @@
 History
 -------
 
+Unreleased
+~~~~~~~~~~
+
+* Added the ``parsel.rows`` module with ``RowExtractor``, a row-scoped
+  extraction API: declare the repeating records first, then extract fields
+  inside each record with ``required()``, ``optional()`` and ``many()``
+  cardinality contracts. Missing values, empty strings and multiple matches
+  are reported as distinct results, nested records never leak their nodes
+  into the enclosing record, and ``RowReport.violations`` locates the exact
+  records that broke the contract.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 
