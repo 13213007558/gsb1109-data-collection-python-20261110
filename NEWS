@@ -1,6 +1,17 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+--------------
+(unreleased)
+
+* Added optional per-item deadlines via ``ExpiringQueue``: consumers only
+  receive items whose deadline is still in the future, expired items are
+  reclaimed with their deadline and reason, and deadlines survive reopening a
+  disk queue
+* Added an optional ``deadline`` argument to ``PriorityQueue.push()`` and
+  ``RoundRobinQueue.push()`` when their internal queues support expiration
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

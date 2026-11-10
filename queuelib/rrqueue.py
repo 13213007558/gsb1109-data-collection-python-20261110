@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from queuelib.expire import DeadlineQueue
 from queuelib.queue import _clear
 
 if TYPE_CHECKING:
@@ -32,6 +33,10 @@ class RoundRobinQueue:
 
     The queue maintains a fifo queue of keys. The key that went last is popped
     first and the next queue for that key is then popped.
+
+    The internal queues may be :class:`~queuelib.expire.DeadlineQueue`
+    instances, in which case ``push()`` forwards an optional *deadline* to
+    them and ``pop()``/``peek()`` pass along the current time.
     """
 
     def __init__(
@@ -45,18 +50,31 @@ class RoundRobinQueue:
             self.queues[key] = self.qfactory(key)
         self.key_queue = deque(self.queues)
 
-    def push(self, obj: Any, key: Hashable) -> None:
+    def push(self, obj: Any, key: Hashable, deadline: int | None = None) -> None:
         if key not in self.key_queue:
             self.queues[key] = self.qfactory(key)
             self.key_queue.appendleft(key)  # it's new, might as well pop first
         q = self.queues[key]
-        q.push(obj)  # this may fail (eg. serialization error)
+        if deadline is not None:
+            if not isinstance(q, DeadlineQueue):
+                raise TypeError(
+                    "deadline is set but the internal queue has no expiration support"
+                )
+            q.push(obj, deadline)  # this may fail (eg. serialization error)
+        else:
+            q.push(obj)  # this may fail (eg. serialization error)
 
-    def peek(self) -> Any | None:
+    def peek(self, now: int | None = None) -> Any | None:
         for key in reversed(self.key_queue):
-            item = self.queues[key].peek()
+            q = self.queues[key]
+            item = q.peek(now) if isinstance(q, DeadlineQueue) else q.peek()
             if item is not None:
                 return item
+            # A deadline bucket can be non-empty yet blocked by an expired
+            # head: report None instead of jumping to another key, so peek
+            # never advertises an item that pop() would not return next.
+            if isinstance(q, DeadlineQueue) and len(q) > 0:
+                return None
         return None
 
     def clear(self) -> None:
@@ -66,7 +84,7 @@ class RoundRobinQueue:
         self.queues.clear()
         self.key_queue.clear()
 
-    def pop(self) -> Any | None:
+    def pop(self, now: int | None = None) -> Any | None:
         # pop until we find a valid object, closing necessary queues
         while True:
             try:
@@ -75,7 +93,7 @@ class RoundRobinQueue:
                 return None
 
             q = self.queues[key]
-            m = q.pop()
+            m = q.pop(now) if isinstance(q, DeadlineQueue) else q.pop()
 
             if len(q) == 0:
                 del self.queues[key]

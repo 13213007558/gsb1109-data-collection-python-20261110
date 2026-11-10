@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from queuelib.expire import DeadlineQueue
 from queuelib.queue import _clear
 
 if TYPE_CHECKING:
@@ -35,6 +36,10 @@ class PriorityQueue:
     previously closed leaving some priority buckets non-empty, those priorities
     should be passed in startprios.
 
+    The internal queues may be :class:`~queuelib.expire.DeadlineQueue`
+    instances, in which case ``push()`` forwards an optional *deadline* to
+    them and ``pop()``/``peek()`` pass along the current time.
+
     """
 
     def __init__(
@@ -46,30 +51,44 @@ class PriorityQueue:
             self.queues[p] = self.qfactory(p)
         self.curprio = min(self.queues) if self.queues else None
 
-    def push(self, obj: Any, priority: int = 0) -> None:
+    def push(self, obj: Any, priority: int = 0, deadline: int | None = None) -> None:
         if priority not in self.queues:
             self.queues[priority] = self.qfactory(priority)
         q = self.queues[priority]
-        q.push(obj)  # this may fail (eg. serialization error)
+        if deadline is not None:
+            if not isinstance(q, DeadlineQueue):
+                raise TypeError(
+                    "deadline is set but the internal queue has no expiration support"
+                )
+            q.push(obj, deadline)  # this may fail (eg. serialization error)
+        else:
+            q.push(obj)  # this may fail (eg. serialization error)
         if self.curprio is None or priority < self.curprio:
             self.curprio = priority
 
-    def pop(self) -> Any | None:
+    def pop(self, now: int | None = None) -> Any | None:
+        # A deadline bucket can hold only expired items: its pop() reclaims
+        # them all, becomes empty and returns None. Keep going through the
+        # lower-priority buckets instead of reporting a false empty queue.
+        while self.curprio is not None:
+            q = self.queues[self.curprio]
+            m = q.pop(now) if isinstance(q, DeadlineQueue) else q.pop()
+            if len(q) == 0:
+                del self.queues[self.curprio]
+                q.close()
+                prios = [p for p, q in self.queues.items() if len(q) > 0]
+                self.curprio = min(prios) if prios else None
+            if m is not None:
+                return m
+        return None
+
+    def peek(self, now: int | None = None) -> Any | None:
         if self.curprio is None:
             return None
         q = self.queues[self.curprio]
-        m = q.pop()
-        if len(q) == 0:
-            del self.queues[self.curprio]
-            q.close()
-            prios = [p for p, q in self.queues.items() if len(q) > 0]
-            self.curprio = min(prios) if prios else None
-        return m
-
-    def peek(self) -> Any | None:
-        if self.curprio is None:
-            return None
-        return self.queues[self.curprio].peek()
+        # Like the underlying queue, an expired bucket head makes peek()
+        # return None without evicting anything; pop() is what drains it.
+        return q.peek(now) if isinstance(q, DeadlineQueue) else q.peek()
 
     def clear(self) -> None:
         for q in self.queues.values():

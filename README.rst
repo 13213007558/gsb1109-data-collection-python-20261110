@@ -148,6 +148,46 @@ And use it::
     >>> rr.pop()
     b'd'
 
+Items with a deadline
+=====================
+
+Some items, such as a coupon task, are useless after a point in time. Wrap any
+queue with :class:`~queuelib.expire.ExpiringQueue` and give each pushed item an
+integer *deadline*. The queue never reads the clock itself: you pass a
+zero-argument callable that returns the current time (as an integer), and each
+method also accepts an explicit time to use instead::
+
+    >>> from queuelib import FifoMemoryQueue, ExpiringQueue
+    >>> clock = [100]
+    >>> q = ExpiringQueue(FifoMemoryQueue(), lambda: clock[0])
+    >>> q.push(b"valid", deadline=105)
+    >>> q.push(b"expiring", deadline=100)
+    >>> q.pop()
+    b'valid'
+
+An item is valid while its deadline is strictly greater than the current time,
+so an item whose deadline equals the current time has already expired.
+``pop()`` skips expired head items instead of returning them; ``peek()`` only
+looks and never removes anything::
+
+    >>> q.peek()      # b"expiring" reached its deadline but is still stored
+    >>> len(q)
+    1
+
+Expired items are reclaimed, not lost. ``pop_expired()`` reclaims any expired
+head items and returns them, each as an :class:`~queuelib.expire.ExpiredItem`
+that carries the original item, its deadline and the reason it was removed::
+
+    >>> [(e.item, e.reason) for e in q.pop_expired()]
+    [(b'expiring', 'deadline reached')]
+
+Time must never move backwards: passing a time lower than a previously seen
+one raises :class:`~queuelib.expire.ExpiredItemError`. Deadlines are written
+next to their items, so they survive closing and reopening a disk queue. To
+observe reclaimed items from a :class:`PriorityQueue` or
+:class:`RoundRobinQueue`, whose internal queues are closed automatically, pass
+an ``on_expired`` callback when wrapping each internal queue.
+
 Clearing a queue
 ================
 
