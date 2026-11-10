@@ -369,6 +369,37 @@ of WARC records, if possible. An exit value of 1 indicates a failure.
 ``warcio check -v`` will print verbose output for each record in the
 WARC file.
 
+Redact
+~~~~~~
+
+The ``warcio redact`` command produces a sanitized copy of a WARC for
+hand-off to analysts. The input archive is opened read-only and is never
+modified; output must be a different path.
+
+By default it removes the HTTP ``Cookie``, ``Set-Cookie``,
+``Authorization`` and ``Proxy-Authorization`` headers (case-insensitive,
+including duplicates). Named form fields can additionally be removed from
+``application/x-www-form-urlencoded`` request bodies.
+
+::
+
+    warcio redact ./input.warc.gz ./output.warc.gz \
+        --gzip --form-field password --manifest ./mapping.jsonl
+
+For every modified record the stale ``WARC-Payload-Digest`` and
+``WARC-Block-Digest`` (and the HTTP ``Content-Length`` when the body
+changes) are recomputed from the new bytes. The optional JSONL manifest
+records the source-to-output mapping (offsets, record id, status, actions
+and old/new digests). Acceptance is based on re-reading the output and
+verifying its digests, not on text searches.
+
+Conservative policies apply: payloads carrying ``Content-Encoding`` or
+``Transfer-Encoding`` are never rewritten in place (header redaction is
+still applied and the skipped body edit is reported); an unparseable form
+body leaves the record unmodified and marks it failed rather than claiming
+it is clean. Use ``--strict`` to exit non-zero when any record cannot be
+fully redacted or a digest cannot be verified.
+
 Recompress
 ~~~~~~~~~~
 
