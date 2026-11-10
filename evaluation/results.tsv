@@ -1,0 +1,317 @@
+id	category	config	kept	reject_gate	canonical	domain	real_check_url
+A1	query_dedup	L	1		http://www.test.org/page?id=1&id=1	test.org	http://www.test.org/page?id=1&id=1
+A1	query_dedup	S	1		http://www.test.org/page?id=1&id=1	test.org	http://www.test.org/page?id=1&id=1
+A1	query_dedup	L-en	1		http://www.test.org/page?id=1&id=1	test.org	http://www.test.org/page?id=1&id=1
+A1	query_dedup	S-en	1		http://www.test.org/page?id=1&id=1	test.org	http://www.test.org/page?id=1&id=1
+A2	query_dedup	L	1		http://www.test.org/page?id=1&id=2	test.org	http://www.test.org/page?id=1&id=2
+A2	query_dedup	S	1		http://www.test.org/page?id=1&id=2	test.org	http://www.test.org/page?id=1&id=2
+A2	query_dedup	L-en	1		http://www.test.org/page?id=1&id=2	test.org	http://www.test.org/page?id=1&id=2
+A2	query_dedup	S-en	1		http://www.test.org/page?id=1&id=2	test.org	http://www.test.org/page?id=1&id=2
+A3	query_dedup	L	1		http://www.test.org/page?id=7	test.org	http://www.test.org/page?id=7
+A3	query_dedup	S	1		http://www.test.org/page?id=7	test.org	http://www.test.org/page?id=7
+A3	query_dedup	L-en	1		http://www.test.org/page?id=7	test.org	http://www.test.org/page?id=7
+A3	query_dedup	S-en	1		http://www.test.org/page?id=7	test.org	http://www.test.org/page?id=7
+A4	query_dedup	L	1		http://www.test.org/page?p=3	test.org	http://www.test.org/page?p=3
+A4	query_dedup	S	1		http://www.test.org/page?p=3	test.org	http://www.test.org/page?p=3
+A4	query_dedup	L-en	1		http://www.test.org/page?p=3	test.org	http://www.test.org/page?p=3
+A4	query_dedup	S-en	1		http://www.test.org/page?p=3	test.org	http://www.test.org/page?p=3
+A5	query_dedup	L	1		http://www.test.org/page?page=2	test.org	http://www.test.org/page?page=2
+A5	query_dedup	S	1		http://www.test.org/page?page=2	test.org	http://www.test.org/page?page=2
+A5	query_dedup	L-en	1		http://www.test.org/page?page=2	test.org	http://www.test.org/page?page=2
+A5	query_dedup	S-en	1		http://www.test.org/page?page=2	test.org	http://www.test.org/page?page=2
+A6	query_dedup	L	1		http://www.test.org/page?download=report&id=9	test.org	http://www.test.org/page?download=report&id=9
+A6	query_dedup	S	1		http://www.test.org/page?id=9	test.org	http://www.test.org/page?id=9
+A6	query_dedup	L-en	1		http://www.test.org/page?download=report&id=9	test.org	http://www.test.org/page?download=report&id=9
+A6	query_dedup	S-en	1		http://www.test.org/page?id=9	test.org	http://www.test.org/page?id=9
+A7	query_dedup	L	1		http://www.test.org/page?baz=qux&foo=bar	test.org	http://www.test.org/page?baz=qux&foo=bar
+A7	query_dedup	S	1		http://www.test.org/page	test.org	http://www.test.org/page
+A7	query_dedup	L-en	1		http://www.test.org/page?baz=qux&foo=bar	test.org	http://www.test.org/page?baz=qux&foo=bar
+A7	query_dedup	S-en	1		http://www.test.org/page	test.org	http://www.test.org/page
+A8a	query_dedup	L	1		http://www.test.org/search?page=1&q=courlan	test.org	http://www.test.org/search?page=1&q=courlan
+A8a	query_dedup	S	1		http://www.test.org/search?page=1	test.org	http://www.test.org/search?page=1
+A8a	query_dedup	L-en	1		http://www.test.org/search?page=1&q=courlan	test.org	http://www.test.org/search?page=1&q=courlan
+A8a	query_dedup	S-en	1		http://www.test.org/search?page=1	test.org	http://www.test.org/search?page=1
+A8b	query_dedup	L	0	type_filter#1			None
+A8b	query_dedup	S	0	type_filter#1			None
+A8b	query_dedup	L-en	0	type_filter#1			None
+A8b	query_dedup	S-en	0	type_filter#1			None
+A9	query_dedup	L	1		http://www.test.org/page?b=2	test.org	http://www.test.org/page?b=2
+A9	query_dedup	S	1		http://www.test.org/page	test.org	http://www.test.org/page
+A9	query_dedup	L-en	1		http://www.test.org/page?b=2	test.org	http://www.test.org/page?b=2
+A9	query_dedup	S-en	1		http://www.test.org/page	test.org	http://www.test.org/page
+A11	query_dedup	L	1		http://www.test.org/index	test.org	http://www.test.org/index
+A11	query_dedup	S	0	path_filter			None
+A11	query_dedup	L-en	1		http://www.test.org/index	test.org	http://www.test.org/index
+A11	query_dedup	S-en	0	path_filter			None
+A12	query_dedup	L	1		http://www.test.org/index.html	test.org	http://www.test.org/index.html
+A12	query_dedup	S	0	path_filter			None
+A12	query_dedup	L-en	1		http://www.test.org/index.html	test.org	http://www.test.org/index.html
+A12	query_dedup	S-en	0	path_filter			None
+B1	encoding	L	1		http://www.test.org/a%20b%20c	test.org	http://www.test.org/a%20b%20c
+B1	encoding	S	1		http://www.test.org/a%20b%20c	test.org	http://www.test.org/a%20b%20c
+B1	encoding	L-en	1		http://www.test.org/a%20b%20c	test.org	http://www.test.org/a%20b%20c
+B1	encoding	S-en	1		http://www.test.org/a%20b%20c	test.org	http://www.test.org/a%20b%20c
+B2	encoding	L	1		http://www.test.org/abc	test.org	http://www.test.org/abc
+B2	encoding	S	1		http://www.test.org/abc	test.org	http://www.test.org/abc
+B2	encoding	L-en	1		http://www.test.org/abc	test.org	http://www.test.org/abc
+B2	encoding	S-en	1		http://www.test.org/abc	test.org	http://www.test.org/abc
+B3	encoding	L	1		http://www.test.org/page?q=M%FCnchen	test.org	http://www.test.org/page?q=M%FCnchen
+B3	encoding	S	1		http://www.test.org/page	test.org	http://www.test.org/page
+B3	encoding	L-en	1		http://www.test.org/page?q=M%FCnchen	test.org	http://www.test.org/page?q=M%FCnchen
+B3	encoding	S-en	1		http://www.test.org/page	test.org	http://www.test.org/page
+B4	encoding	L	1		http://www.test.org/page?q=M%C3%BCnchen	test.org	http://www.test.org/page?q=M%C3%BCnchen
+B4	encoding	S	1		http://www.test.org/page	test.org	http://www.test.org/page
+B4	encoding	L-en	1		http://www.test.org/page?q=M%C3%BCnchen	test.org	http://www.test.org/page?q=M%C3%BCnchen
+B4	encoding	S-en	1		http://www.test.org/page	test.org	http://www.test.org/page
+B5	encoding	L	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B5	encoding	S	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B5	encoding	L-en	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B5	encoding	S-en	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B6	encoding	L	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B6	encoding	S	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B6	encoding	L-en	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B6	encoding	S-en	1		https://www.bücher.de/katalog	bücher.de	https://www.bücher.de/katalog
+B7	encoding	L	1		http://www.test.org/caf%c3%a9/menu	test.org	http://www.test.org/caf%c3%a9/menu
+B7	encoding	S	1		http://www.test.org/caf%c3%a9/menu	test.org	http://www.test.org/caf%c3%a9/menu
+B7	encoding	L-en	1		http://www.test.org/caf%c3%a9/menu	test.org	http://www.test.org/caf%c3%a9/menu
+B7	encoding	S-en	1		http://www.test.org/caf%c3%a9/menu	test.org	http://www.test.org/caf%c3%a9/menu
+B8	encoding	L	1		http://www.test.org/%2Fetc/passwd	test.org	http://www.test.org/%2Fetc/passwd
+B8	encoding	S	1		http://www.test.org/%2Fetc/passwd	test.org	http://www.test.org/%2Fetc/passwd
+B8	encoding	L-en	1		http://www.test.org/%2Fetc/passwd	test.org	http://www.test.org/%2Fetc/passwd
+B8	encoding	S-en	1		http://www.test.org/%2Fetc/passwd	test.org	http://www.test.org/%2Fetc/passwd
+B9	encoding	L	1		https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88	例え.jp	https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88
+B9	encoding	S	1		https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88	例え.jp	https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88
+B9	encoding	L-en	1		https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88	例え.jp	https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88
+B9	encoding	S-en	1		https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88	例え.jp	https://例え.jp/%E3%83%86%E3%82%B9%E3%83%88
+C1	navigation	L	0	type_filter#1			None
+C1	navigation	S	0	type_filter#1			None
+C1	navigation	L-en	0	type_filter#1			None
+C1	navigation	S-en	0	type_filter#1			None
+C2	navigation	L	0	type_filter#1			None
+C2	navigation	S	0	type_filter#1			None
+C2	navigation	L-en	0	type_filter#1			None
+C2	navigation	S-en	0	type_filter#1			None
+C3	navigation	L	0	type_filter#1			None
+C3	navigation	S	0	type_filter#1			None
+C3	navigation	L-en	0	type_filter#1			None
+C3	navigation	S-en	0	type_filter#1			None
+C4	navigation	L	1		https://www.test.org/blog/?p=123	test.org	https://www.test.org/blog/?p=123
+C4	navigation	S	1		https://www.test.org/blog/?p=123	test.org	https://www.test.org/blog/?p=123
+C4	navigation	L-en	1		https://www.test.org/blog/?p=123	test.org	https://www.test.org/blog/?p=123
+C4	navigation	S-en	1		https://www.test.org/blog/?p=123	test.org	https://www.test.org/blog/?p=123
+C5	navigation	L	0	type_filter#1			None
+C5	navigation	S	0	type_filter#1			None
+C5	navigation	L-en	0	type_filter#1			None
+C5	navigation	S-en	0	type_filter#1			None
+C6	navigation	L	0	type_filter#1			None
+C6	navigation	S	0	type_filter#1			None
+C6	navigation	L-en	0	type_filter#1			None
+C6	navigation	S-en	0	type_filter#1			None
+C7	navigation	L	0	type_filter#1			None
+C7	navigation	S	0	type_filter#1			None
+C7	navigation	L-en	0	type_filter#1			None
+C7	navigation	S-en	0	type_filter#1			None
+C8	navigation	L	0	type_filter#1			None
+C8	navigation	S	0	type_filter#1			None
+C8	navigation	L-en	0	type_filter#1			None
+C8	navigation	S-en	0	type_filter#1			None
+C9	navigation	L	0	type_filter#1			None
+C9	navigation	S	0	type_filter#1			None
+C9	navigation	L-en	0	type_filter#1			None
+C9	navigation	S-en	0	type_filter#1			None
+C10	navigation	L	0	type_filter#1			None
+C10	navigation	S	0	type_filter#1			None
+C10	navigation	L-en	0	type_filter#1			None
+C10	navigation	S-en	0	type_filter#1			None
+C12	navigation	L	0	type_filter#1			None
+C12	navigation	S	0	type_filter#1			None
+C12	navigation	L-en	0	type_filter#1			None
+C12	navigation	S-en	0	type_filter#1			None
+D1	attachment	L	0	extension_filter			None
+D1	attachment	S	0	extension_filter			None
+D1	attachment	L-en	0	extension_filter			None
+D1	attachment	S-en	0	extension_filter			None
+D2	attachment	L	1		https://www.test.org/download/1024	test.org	https://www.test.org/download/1024
+D2	attachment	S	1		https://www.test.org/download/1024	test.org	https://www.test.org/download/1024
+D2	attachment	L-en	1		https://www.test.org/download/1024	test.org	https://www.test.org/download/1024
+D2	attachment	S-en	1		https://www.test.org/download/1024	test.org	https://www.test.org/download/1024
+D3	attachment	L	1		https://www.test.org/download.php?id=1024	test.org	https://www.test.org/download.php?id=1024
+D3	attachment	S	1		https://www.test.org/download.php?id=1024	test.org	https://www.test.org/download.php?id=1024
+D3	attachment	L-en	1		https://www.test.org/download.php?id=1024	test.org	https://www.test.org/download.php?id=1024
+D3	attachment	S-en	1		https://www.test.org/download.php?id=1024	test.org	https://www.test.org/download.php?id=1024
+D4	attachment	L	1		https://www.test.org/page?file=movie.mp4	test.org	https://www.test.org/page?file=movie.mp4
+D4	attachment	S	0	type_filter#1			None
+D4	attachment	L-en	1		https://www.test.org/page?file=movie.mp4	test.org	https://www.test.org/page?file=movie.mp4
+D4	attachment	S-en	0	type_filter#1			None
+D5	attachment	L	1		https://www.test.org/page#movie.mp4	test.org	https://www.test.org/page#movie.mp4
+D5	attachment	S	0	type_filter#1			None
+D5	attachment	L-en	1		https://www.test.org/page#movie.mp4	test.org	https://www.test.org/page#movie.mp4
+D5	attachment	S-en	0	type_filter#1			None
+D6	attachment	L	0	extension_filter			None
+D6	attachment	S	0	extension_filter			None
+D6	attachment	L-en	0	extension_filter			None
+D6	attachment	S-en	0	extension_filter			None
+D7	attachment	L	1		https://www.test.org/feed.xml	test.org	https://www.test.org/feed.xml
+D7	attachment	S	0	type_filter#1			None
+D7	attachment	L-en	1		https://www.test.org/feed.xml	test.org	https://www.test.org/feed.xml
+D7	attachment	S-en	0	type_filter#1			None
+D8	attachment	L	1		https://www.test.org/audio/song.mp3	test.org	https://www.test.org/audio/song.mp3
+D8	attachment	S	0	type_filter#1			None
+D8	attachment	L-en	1		https://www.test.org/audio/song.mp3	test.org	https://www.test.org/audio/song.mp3
+D8	attachment	S-en	0	type_filter#1			None
+D9	attachment	L	0	domain_filter			None
+D9	attachment	S	0	domain_filter			None
+D9	attachment	L-en	0	domain_filter			None
+D9	attachment	S-en	0	domain_filter			None
+D10	attachment	L	0	extension_filter			None
+D10	attachment	S	0	extension_filter			None
+D10	attachment	L-en	0	extension_filter			None
+D10	attachment	S-en	0	extension_filter			None
+D11	attachment	L	0	extension_filter			None
+D11	attachment	S	0	extension_filter			None
+D11	attachment	L-en	0	extension_filter			None
+D11	attachment	S-en	0	extension_filter			None
+D12	attachment	L	1		https://www.test.org/downloads	test.org	https://www.test.org/downloads
+D12	attachment	S	1		https://www.test.org/downloads	test.org	https://www.test.org/downloads
+D12	attachment	L-en	1		https://www.test.org/downloads	test.org	https://www.test.org/downloads
+D12	attachment	S-en	1		https://www.test.org/downloads	test.org	https://www.test.org/downloads
+D13	attachment	L	0	extension_filter			None
+D13	attachment	S	0	extension_filter			None
+D13	attachment	L-en	0	extension_filter			None
+D13	attachment	S-en	0	extension_filter			None
+D14	attachment	L	1		https://www.test.org/download?file=report.pdf	test.org	https://www.test.org/download?file=report.pdf
+D14	attachment	S	0	type_filter#1			None
+D14	attachment	L-en	1		https://www.test.org/download?file=report.pdf	test.org	https://www.test.org/download?file=report.pdf
+D14	attachment	S-en	0	type_filter#1			None
+E1	i18n_host	L	1		https://en.example.org/article	example.org	https://en.example.org/article
+E1	i18n_host	S	1		https://en.example.org/article	example.org	https://en.example.org/article
+E1	i18n_host	L-en	1		https://en.example.org/article	example.org	https://en.example.org/article
+E1	i18n_host	S-en	1		https://en.example.org/article	example.org	https://en.example.org/article
+E2	i18n_host	L	1		https://de.example.org/article	example.org	https://de.example.org/article
+E2	i18n_host	S	1		https://de.example.org/article	example.org	https://de.example.org/article
+E2	i18n_host	L-en	1		https://de.example.org/article	example.org	https://de.example.org/article
+E2	i18n_host	S-en	0	lang_filter	https://de.example.org/article		None
+E3	i18n_host	L	1		https://fr.example.org/article	example.org	https://fr.example.org/article
+E3	i18n_host	S	1		https://fr.example.org/article	example.org	https://fr.example.org/article
+E3	i18n_host	L-en	1		https://fr.example.org/article	example.org	https://fr.example.org/article
+E3	i18n_host	S-en	0	lang_filter	https://fr.example.org/article		None
+E4	i18n_host	L	1		https://www.test.org/en/article1.html	test.org	https://www.test.org/en/article1.html
+E4	i18n_host	S	1		https://www.test.org/en/article1.html	test.org	https://www.test.org/en/article1.html
+E4	i18n_host	L-en	1		https://www.test.org/en/article1.html	test.org	https://www.test.org/en/article1.html
+E4	i18n_host	S-en	1		https://www.test.org/en/article1.html	test.org	https://www.test.org/en/article1.html
+E5	i18n_host	L	1		https://www.test.org/es/article3.html	test.org	https://www.test.org/es/article3.html
+E5	i18n_host	S	1		https://www.test.org/es/article3.html	test.org	https://www.test.org/es/article3.html
+E5	i18n_host	L-en	0	lang_filter	https://www.test.org/es/article3.html		None
+E5	i18n_host	S-en	0	lang_filter	https://www.test.org/es/article3.html		None
+E6	i18n_host	L	1		https://www.test.org/de/impressum	test.org	https://www.test.org/de/impressum
+E6	i18n_host	S	0	path_filter			None
+E6	i18n_host	L-en	0	lang_filter	https://www.test.org/de/impressum		None
+E6	i18n_host	S-en	0	path_filter			None
+E7	i18n_host	L	1		https://www.test.org/en-US/article	test.org	https://www.test.org/en-US/article
+E7	i18n_host	S	1		https://www.test.org/en-US/article	test.org	https://www.test.org/en-US/article
+E7	i18n_host	L-en	1		https://www.test.org/en-US/article	test.org	https://www.test.org/en-US/article
+E7	i18n_host	S-en	1		https://www.test.org/en-US/article	test.org	https://www.test.org/en-US/article
+E8	i18n_host	L	1		https://www.test.org/en/de/x	test.org	https://www.test.org/en/de/x
+E8	i18n_host	S	1		https://www.test.org/en/de/x	test.org	https://www.test.org/en/de/x
+E8	i18n_host	L-en	1		https://www.test.org/en/de/x	test.org	https://www.test.org/en/de/x
+E8	i18n_host	S-en	1		https://www.test.org/en/de/x	test.org	https://www.test.org/en/de/x
+E9	i18n_host	L	1		https://www.test.org/page?id=1&lang=fr	test.org	https://www.test.org/page?id=1&lang=fr
+E9	i18n_host	S	1		https://www.test.org/page?id=1&lang=fr	test.org	https://www.test.org/page?id=1&lang=fr
+E9	i18n_host	L-en	0	clean_query			None
+E9	i18n_host	S-en	0	clean_query			None
+E10	i18n_host	L	1		https://www.test.org/page?id=1&language=en	test.org	https://www.test.org/page?id=1&language=en
+E10	i18n_host	S	1		https://www.test.org/page?id=1&language=en	test.org	https://www.test.org/page?id=1&language=en
+E10	i18n_host	L-en	1		https://www.test.org/page?id=1&language=en	test.org	https://www.test.org/page?id=1&language=en
+E10	i18n_host	S-en	1		https://www.test.org/page?id=1&language=en	test.org	https://www.test.org/page?id=1&language=en
+E14a	i18n_host	L	0	registrable_domain	http://shop.ck		None
+E14a	i18n_host	S	0	registrable_domain	http://shop.ck		None
+E14a	i18n_host	L-en	0	registrable_domain	http://shop.ck		None
+E14a	i18n_host	S-en	0	registrable_domain	http://shop.ck		None
+E14b	i18n_host	L	0	validate_url			None
+E14b	i18n_host	S	0	validate_url			None
+E14b	i18n_host	L-en	0	validate_url			None
+E14b	i18n_host	S-en	0	validate_url			None
+E14f	i18n_host	L	1		http://city.kawasaki.jp	city.kawasaki.jp	http://city.kawasaki.jp
+E14f	i18n_host	S	1		http://city.kawasaki.jp	city.kawasaki.jp	http://city.kawasaki.jp
+E14f	i18n_host	L-en	1		http://city.kawasaki.jp	city.kawasaki.jp	http://city.kawasaki.jp
+E14f	i18n_host	S-en	1		http://city.kawasaki.jp	city.kawasaki.jp	http://city.kawasaki.jp
+E14g	i18n_host	L	0	registrable_domain	https://foo.kobe.jp		None
+E14g	i18n_host	S	0	registrable_domain	https://foo.kobe.jp		None
+E14g	i18n_host	L-en	0	registrable_domain	https://foo.kobe.jp		None
+E14g	i18n_host	S-en	0	registrable_domain	https://foo.kobe.jp		None
+E14h	i18n_host	L	1		http://ck-shop.example.ck/x	ck-shop.example.ck	http://ck-shop.example.ck/x
+E14h	i18n_host	S	1		http://ck-shop.example.ck/x	ck-shop.example.ck	http://ck-shop.example.ck/x
+E14h	i18n_host	L-en	1		http://ck-shop.example.ck/x	ck-shop.example.ck	http://ck-shop.example.ck/x
+E14h	i18n_host	S-en	1		http://ck-shop.example.ck/x	ck-shop.example.ck	http://ck-shop.example.ck/x
+E14c	i18n_host	L	1		https://news.bbc.co.uk	bbc.co.uk	https://news.bbc.co.uk
+E14c	i18n_host	S	1		https://news.bbc.co.uk	bbc.co.uk	https://news.bbc.co.uk
+E14c	i18n_host	L-en	1		https://news.bbc.co.uk	bbc.co.uk	https://news.bbc.co.uk
+E14c	i18n_host	S-en	1		https://news.bbc.co.uk	bbc.co.uk	https://news.bbc.co.uk
+E14d	i18n_host	L	1		http://127.0.0.1:8080/path	127.0.0.1	http://127.0.0.1:8080/path
+E14d	i18n_host	S	1		http://127.0.0.1:8080/path	127.0.0.1	http://127.0.0.1:8080/path
+E14d	i18n_host	L-en	1		http://127.0.0.1:8080/path	127.0.0.1	http://127.0.0.1:8080/path
+E14d	i18n_host	S-en	1		http://127.0.0.1:8080/path	127.0.0.1	http://127.0.0.1:8080/path
+E14e	i18n_host	L	1		http://[2001:db8::1]/path	2001:db8::1	http://[2001:db8::1]/path
+E14e	i18n_host	S	1		http://[2001:db8::1]/path	2001:db8::1	http://[2001:db8::1]/path
+E14e	i18n_host	L-en	1		http://[2001:db8::1]/path	2001:db8::1	http://[2001:db8::1]/path
+E14e	i18n_host	S-en	1		http://[2001:db8::1]/path	2001:db8::1	http://[2001:db8::1]/path
+E15a	i18n_host	L	1		https://www.facebook.com/x	facebook.com	https://www.facebook.com/x
+E15a	i18n_host	S	0	blacklist	https://www.facebook.com/x		None
+E15a	i18n_host	L-en	1		https://www.facebook.com/x	facebook.com	https://www.facebook.com/x
+E15a	i18n_host	S-en	0	blacklist	https://www.facebook.com/x		None
+E15b	i18n_host	L	1		https://mail.google.com/a	google.com	https://mail.google.com/a
+E15b	i18n_host	S	0	blacklist	https://mail.google.com/a		None
+E15b	i18n_host	L-en	1		https://mail.google.com/a	google.com	https://mail.google.com/a
+E15b	i18n_host	S-en	0	blacklist	https://mail.google.com/a		None
+E15c	i18n_host	L	1		https://bit.ly/x	bit.ly	https://bit.ly/x
+E15c	i18n_host	S	0	blacklist	https://bit.ly/x		None
+E15c	i18n_host	L-en	1		https://bit.ly/x	bit.ly	https://bit.ly/x
+E15c	i18n_host	S-en	0	blacklist	https://bit.ly/x		None
+E15d	i18n_host	L	1		https://web.example.org/x	example.org	https://web.example.org/x
+E15d	i18n_host	S	1		https://web.example.org/x	example.org	https://web.example.org/x
+E15d	i18n_host	L-en	1		https://web.example.org/x	example.org	https://web.example.org/x
+E15d	i18n_host	S-en	1		https://web.example.org/x	example.org	https://web.example.org/x
+F1	normalization	L	1		https://www.test.org/page#section	test.org	https://www.test.org/page#section
+F1	normalization	S	1		https://www.test.org/page	test.org	https://www.test.org/page
+F1	normalization	L-en	1		https://www.test.org/page#section	test.org	https://www.test.org/page#section
+F1	normalization	S-en	1		https://www.test.org/page	test.org	https://www.test.org/page
+F2	normalization	L	1		https://www.test.org/page	test.org	https://www.test.org/page
+F2	normalization	S	1		https://www.test.org/page	test.org	https://www.test.org/page
+F2	normalization	L-en	1		https://www.test.org/page	test.org	https://www.test.org/page
+F2	normalization	S-en	1		https://www.test.org/page	test.org	https://www.test.org/page
+F3	normalization	L	1		https://www.test.org/path	test.org	https://www.test.org/path
+F3	normalization	S	1		https://www.test.org/path	test.org	https://www.test.org/path
+F3	normalization	L-en	1		https://www.test.org/path	test.org	https://www.test.org/path
+F3	normalization	S-en	1		https://www.test.org/path	test.org	https://www.test.org/path
+F4	normalization	L	1		https://www.test.org/path	test.org	https://www.test.org/path
+F4	normalization	S	1		https://www.test.org/path	test.org	https://www.test.org/path
+F4	normalization	L-en	1		https://www.test.org/path	test.org	https://www.test.org/path
+F4	normalization	S-en	1		https://www.test.org/path	test.org	https://www.test.org/path
+F5	normalization	L	1		https://www.test.org/a/b/c	test.org	https://www.test.org/a/b/c
+F5	normalization	S	1		https://www.test.org/a/b/c	test.org	https://www.test.org/a/b/c
+F5	normalization	L-en	1		https://www.test.org/a/b/c	test.org	https://www.test.org/a/b/c
+F5	normalization	S-en	1		https://www.test.org/a/b/c	test.org	https://www.test.org/a/b/c
+F6a	normalization	L	1		https://www.test.org	test.org	https://www.test.org
+F6a	normalization	S	1		https://www.test.org	test.org	https://www.test.org
+F6a	normalization	L-en	1		https://www.test.org	test.org	https://www.test.org
+F6a	normalization	S-en	1		https://www.test.org	test.org	https://www.test.org
+F6b	normalization	L	1		https://www.test.org	test.org	https://www.test.org
+F6b	normalization	S	1		https://www.test.org	test.org	https://www.test.org
+F6b	normalization	L-en	1		https://www.test.org	test.org	https://www.test.org
+F6b	normalization	S-en	1		https://www.test.org	test.org	https://www.test.org
+F7	normalization	L	1		https://www.test.org/livecams/stream	test.org	https://www.test.org/livecams/stream
+F7	normalization	S	0	type_filter#1			None
+F7	normalization	L-en	1		https://www.test.org/livecams/stream	test.org	https://www.test.org/livecams/stream
+F7	normalization	S-en	0	type_filter#1			None
+F8	normalization	L	0	type_filter#1			None
+F8	normalization	S	0	type_filter#1			None
+F8	normalization	L-en	0	type_filter#1			None
+F8	normalization	S-en	0	type_filter#1			None
+F9	normalization	L	1		https://www.test.org/page?x=porno	test.org	https://www.test.org/page?x=porno
+F9	normalization	S	1		https://www.test.org/page	test.org	https://www.test.org/page
+F9	normalization	L-en	1		https://www.test.org/page?x=porno	test.org	https://www.test.org/page?x=porno
+F9	normalization	S-en	1		https://www.test.org/page	test.org	https://www.test.org/page
+F10	normalization	L	1		https://www.test.org/kontakt/	test.org	https://www.test.org/kontakt/
+F10	normalization	S	0	path_filter			None
+F10	normalization	L-en	1		https://www.test.org/kontakt/	test.org	https://www.test.org/kontakt/
+F10	normalization	S-en	0	path_filter			None

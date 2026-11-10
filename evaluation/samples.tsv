@@ -1,0 +1,80 @@
+id	category	url	intent
+A1	query_dedup	http://www.test.org/page?id=1&id=1	同键同值重复，观察去重与规范化
+A2	query_dedup	http://www.test.org/page?id=1&id=2	同键不同值，观察多值保留
+A3	query_dedup	http://www.test.org/page?utm_source=news&id=7	跟踪参数与白名单参数混合
+A4	query_dedup	http://www.test.org/page?session=abc&p=3	session 类跟踪参数
+A5	query_dedup	http://www.test.org/page?ref=home&page=2	ref 跟踪参数 + 分页白名单
+A6	query_dedup	http://www.test.org/page?download=report&id=9	download 作为查询键（非附件）
+A7	query_dedup	http://www.test.org/page?foo=bar&baz=qux	严格模式白名单外参数全被剥离
+A8a	query_dedup	http://www.test.org/search?q=courlan&page=1	无尾斜杠 search 路径
+A8b	query_dedup	http://www.test.org/search/?q=courlan&page=1	带尾斜杠 search 命中站点结构
+A9	query_dedup	http://www.test.org/page?a=&b=2	空值参数处理
+A11	query_dedup	http://www.test.org/index?utm_source=x	跟踪参数剥离后暴露 index 首页
+A12	query_dedup	http://www.test.org/index.html?utm_source=x	剥离后暴露 index.html 首页
+B1	encoding	http://www.test.org/a%20b%20c	百分号编码空格路径
+B2	encoding	http://www.test.org/a b c	字面空格，scrub 阶段直接压缩
+B3	encoding	http://www.test.org/page?q=M%FCnchen	非法 UTF-8 百分号序列（surrogate 往返）
+B4	encoding	http://www.test.org/page?q=M%C3%BCnchen	合法 UTF-8（München）查询
+B5	encoding	https://www.bücher.de/katalog	Unicode IDN 主机
+B6	encoding	https://www.xn--bcher-kva.de/katalog	punycode 主机，应与 B5 归一为同一形式
+B7	encoding	http://www.test.org/caf%c3%a9/menu	小写百分号编码路径段
+B8	encoding	http://www.test.org/%2Fetc/passwd	编码斜杠不应被解码
+B9	encoding	https://例え.jp/テスト	日文 IDN 主机与非 ASCII 路径
+C1	navigation	https://www.test.org/page/2	分页导航页
+C2	navigation	https://www.test.org/category/news/	分类导航
+C3	navigation	https://www.test.org/tag/courlan	标签导航
+C4	navigation	https://www.test.org/blog/?p=123	WordPress 短链 ?p= 数字
+C5	navigation	https://www.test.org/2020/01/	日期归档路径
+C6	navigation	https://www.test.org/archives/	归档页
+C7	navigation	https://www.test.org/suche/?q=hund	德语站内搜索
+C8	navigation	https://www.test.org/attachment/report	附件挂载页（WordPress）
+C9	navigation	https://www.test.org/wp-json/wp/v2/posts	WP REST API 结构路径
+C10	navigation	https://www.test.org/author/max	作者归档
+C12	navigation	https://www.test.org/gallery/1	图库导航拼写变体
+D1	attachment	https://www.test.org/downloads/2024/report.pdf	真实 PDF 附件
+D2	attachment	https://www.test.org/download/1024	下载落地 HTML 页（无扩展名）
+D3	attachment	https://www.test.org/download.php?id=1024	白名单扩展名 .php + 白名单参数
+D4	attachment	https://www.test.org/page?file=movie.mp4	附件类型藏在查询串
+D5	attachment	https://www.test.org/page#movie.mp4	附件类型藏在 fragment
+D6	attachment	https://www.test.org/data/archive.zip	压缩包附件
+D7	attachment	https://www.test.org/feed.xml	XML：宽松放行、严格按类型拒绝
+D8	attachment	https://www.test.org/audio/song.mp3	音频附件
+D9	attachment	https://cdn-img.example.org/pic	主机名含图片标记
+D10	attachment	https://www.test.org/images/banner.jpg	图片附件
+D11	attachment	https://www.test.org/media/clip.mov	视频附件
+D12	attachment	https://www.test.org/downloads	下载栏目首页（无扩展名无尾斜杠）
+D13	attachment	https://www.test.org/get/file.PDF	大写扩展名应同样识别
+D14	attachment	https://www.test.org/download?file=report.pdf	下载页查询里携带 PDF 文件名
+E1	i18n_host	https://en.example.org/article	英文子域主机
+E2	i18n_host	https://de.example.org/article	德文子域主机
+E3	i18n_host	https://fr.example.org/article	法文子域主机
+E4	i18n_host	https://www.test.org/en/article1.html	路径 /en/ 语言线索
+E5	i18n_host	https://www.test.org/es/article3.html	路径 /es/ 非目标语言
+E6	i18n_host	https://www.test.org/de/impressum	非英语路径叠加 impressum
+E7	i18n_host	https://www.test.org/en-US/article	带地区的 en-US 语言段
+E8	i18n_host	https://www.test.org/en/de/x	双语言段互相抵消
+E9	i18n_host	https://www.test.org/page?lang=fr&id=1	lang 查询参数声明法语
+E10	i18n_host	https://www.test.org/page?language=en&id=1	language 查询参数声明英语
+E14a	i18n_host	http://shop.ck/	PSL 通配符后缀，无可注册域
+E14b	i18n_host	http://www.ck/	PSL 例外规则可归属，但被 validate_url 短主机门槛拦截
+E14f	i18n_host	http://city.kawasaki.jp/	PSL 例外规则，可注册域为 city.kawasaki.jp
+E14g	i18n_host	https://foo.kobe.jp/	PSL 通配符：foo.kobe.jp 本身即公共后缀，无归属
+E14h	i18n_host	http://ck-shop.example.ck/x	通配符后缀下的正常可注册域
+E14c	i18n_host	https://news.bbc.co.uk/	多级后缀归属判断
+E14d	i18n_host	http://127.0.0.1:8080/path	IPv4 字面值主机
+E14e	i18n_host	http://[2001:db8::1]/path	IPv6 字面值主机
+E15a	i18n_host	https://www.facebook.com/x	黑名单社交域
+E15b	i18n_host	https://mail.google.com/a	黑名单 Google 子域
+E15c	i18n_host	https://bit.ly/x	黑名单短链（bit 标签）
+E15d	i18n_host	https://web.example.org/x	通用词 web 也在黑名单
+F1	normalization	https://www.test.org/page#section	普通 fragment 保留差异
+F2	normalization	https://www.test.org/page#utm_source=news	fragment 内跟踪参数
+F3	normalization	https://WWW.TEST.ORG:443/path	大写主机与默认端口
+F4	normalization	https://user:pass@www.test.org/path	userinfo 应被剥离
+F5	normalization	https://www.test.org/a//b///c	重复斜杠折叠
+F6a	normalization	https://www.test.org/	根路径尾斜杠规范
+F6b	normalization	https://www.test.org	无尾斜杠根主机
+F7	normalization	https://www.test.org/livecams/stream	成人/直播关键词
+F8	normalization	https://www.test.org/feed	feed 路径
+F9	normalization	https://www.test.org/page?x=porno	成人关键词藏在查询串
+F10	normalization	https://www.test.org/kontakt/	德语联系页，严格 path_filter 拒绝
