@@ -2067,6 +2067,19 @@ class HTMLForm:
         for control in self.controls:
             control.readonly = bool(readonly)
 
+    def validate(self):
+        """Validate the form's current values without submitting.
+
+        Returns a :class:`mechanize.FormValidationResult` describing, per
+        control, which constraints pass, fail, or cannot be checked by this
+        implementation.  No request is sent and no control values are
+        modified, so the form may still be submitted afterwards in the
+        usual way regardless of the result.
+
+        """
+        from ._form_validation import validate_form
+        return validate_form(self)
+
     def clear_all(self):
         """Clear the value attributes of all controls in the form.
 

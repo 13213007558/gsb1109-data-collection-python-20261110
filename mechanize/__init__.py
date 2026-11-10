@@ -15,6 +15,8 @@ from ._form_controls import (
     ItemCountError, ItemNotFoundError, Label, ListControl, LocateError,
     Missing, PasswordControl, RadioControl, ScalarControl, SelectControl,
     SubmitButtonControl, SubmitControl, TextareaControl, TextControl)
+from ._form_validation import (FieldResult, FormValidationResult,
+                               validate_form)
 from ._html import Factory, Link
 # misc
 from ._entities import html5_entities
@@ -152,4 +154,9 @@ __all__ = [
     'SubmitControl',
     'TextControl',
     'TextareaControl',
+
+    # form validation
+    'FieldResult',
+    'FormValidationResult',
+    'validate_form',
 ]
