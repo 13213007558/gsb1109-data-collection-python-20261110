@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Final, cast, overload
 from ._internal_utils import to_native_string
 from .compat import basestring, str, urlparse
 from .cookies import extract_cookies_to_jar
+from .signing import sign_request
 from .utils import parse_dict_header
 
 if TYPE_CHECKING:
@@ -309,6 +310,13 @@ class HTTPDigestAuth(AuthBase):
             )
             if _digest_auth:
                 prep.headers["Authorization"] = _digest_auth
+
+            # The replayed request carries a new Authorization header, so any
+            # signature copied from the original request must be recomputed
+            # rather than reused.
+            if prep.signer is not None:
+                sign_request(prep, prep.signer)
+
             _r = r.connection.send(prep, **kwargs)
             _r.history.append(r)
             _r.request = prep

@@ -87,6 +87,61 @@ For more information on how to OAuth flow works, please see the official `OAuth`
 For examples and documentation on requests-oauthlib, please see the `requests_oauthlib`_
 repository on GitHub
 
+Request Signing
+---------------
+
+Some vendors require a signature over the exact request being sent: the final
+request target, a chosen set of headers and a digest of the body. Computing
+that signature *before* preparing the request is unreliable, because
+preparation percent-encodes the URL, merges headers and encodes the body, so
+the signed bytes no longer match the transmitted bytes.
+
+Requests lets you plug in a ``signer`` callable that runs at the end of
+request preparation, once the exact wire representation is settled::
+
+    import hashlib
+    import hmac
+    import requests
+
+    secret = b"shared-secret"
+
+    def sign(signature_input):
+        canonical = b"\n".join([
+            signature_input["method"].encode(),
+            signature_input["path_url"].encode(),
+            signature_input["body_digest"] or b"",
+        ])
+        signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+        return {"X-Signature": signature}
+
+    requests.post(
+        "https://api.example.com/items",
+        params=[("a", "1"), ("a", "2")],
+        data={"key": "value with spaces"},
+        signer=sign,
+    )
+
+The ``signature_input`` mapping contains ``method``, ``url``, ``path_url``,
+the selected ``headers``, the exact in-memory ``body`` bytes (or ``None`` for
+streams) and a SHA-256 ``body_digest``. Because it is captured after all
+encoding, it always corresponds to what will actually be transmitted.
+
+A signer may be attached to a whole :class:`~requests.Session` through
+``session.signer``; a per-request ``signer`` overrides it. The signature is
+recomputed whenever the request is prepared again, so redirects, retries and
+manual re-preparation never reuse a stale signature.
+
+Signing a body that can only be read once (a generator or other non-seekable
+stream) would consume the bytes before they could be sent. Requests refuses
+these with :class:`~requests.exceptions.UnsignedBodyError`. Seekable
+file-like bodies are digested automatically and rewound; for genuinely
+one-shot, fixed-length streams you can instead pass a precomputed digest in an
+``X-Requests-Content-Digest`` header, which is consumed during signing and
+never transmitted.
+
+Signing errors never include signature material in their message text, so
+secrets cannot leak into logs through an exception.
+
 OAuth 2 and OpenID Connect Authentication
 -----------------------------------------
 

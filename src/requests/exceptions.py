@@ -147,6 +147,25 @@ class UnrewindableBodyError(RequestException):
     """Requests encountered an error when trying to rewind a body."""
 
 
+class SigningError(RequestException):
+    """A request could not be signed.
+
+    The message deliberately carries no signing material (keys, secrets or
+    signature values); attach the failing request via ``request=`` instead.
+    """
+
+
+class UnsignedBodyError(SigningError):
+    """The body of a request that requires a signature could not be digested.
+
+    Raised for one-shot, non-rewindable bodies (generators, chunked streams
+    or unseekable file objects) whose content cannot be inspected without
+    consuming the bytes that still have to be sent. Callers must either pass
+    a rewindable/seekable body or supply the digest (or another verifiable
+    body summary) themselves.
+    """
+
+
 # Warnings
 
 

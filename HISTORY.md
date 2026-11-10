@@ -4,7 +4,16 @@ Release History
 dev
 ---
 
-- \[Short description of non-trivial change.\]
+- Added a pluggable request signing flow. A callable ``signer`` can be
+  attached to a ``Request`` or ``Session`` and receives a
+  ``SignatureInput`` describing the fully encoded request target, selected
+  headers and body digest that will actually be transmitted, returning the
+  signature headers to attach. Signing runs at the end of preparation and is
+  recomputed on redirects, retries and re-preparation, so a signature can
+  never be computed against pre-encoding content or reused after the request
+  changes. One-shot bodies that cannot be digested without consuming them
+  raise ``UnsignedBodyError`` unless the caller supplies a verifiable digest,
+  and signing errors never include signature material in their message text.
 
 
 2.34.2 (2026-05-14)

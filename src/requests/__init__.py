@@ -177,12 +177,15 @@ from .exceptions import (
     JSONDecodeError,
     ReadTimeout,
     RequestException,
+    SigningError,
     Timeout,
     TooManyRedirects,
+    UnsignedBodyError,
     URLRequired,
 )
 from .models import PreparedRequest, Request, Response
 from .sessions import Session, session
+from .signing import build_signature_input, sign_request
 from .status_codes import codes
 
 __all__ = (
@@ -196,9 +199,12 @@ __all__ = (
     "RequestException",
     "Response",
     "Session",
+    "SigningError",
     "Timeout",
     "TooManyRedirects",
+    "UnsignedBodyError",
     "URLRequired",
+    "build_signature_input",
     "codes",
     "delete",
     "get",
@@ -210,6 +216,7 @@ __all__ = (
     "put",
     "request",
     "session",
+    "sign_request",
     "utils",
 )
 

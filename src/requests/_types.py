@@ -137,6 +137,30 @@ if TYPE_CHECKING:
         tuple[str, str] | AuthBase | Callable[[PreparedRequest], PreparedRequest] | None
     )
 
+    class SignatureInput(TypedDict, total=False):
+        """The exact content that will be transmitted, handed to a signer.
+
+        Every field is captured after the request has been fully prepared,
+        so percent-encoding, header merging and body encoding are already
+        settled and the signer always signs what will actually be sent.
+        """
+
+        method: str
+        url: str
+        path_url: str
+        headers: CaseInsensitiveDict[str | bytes]
+        #: Exact wire bytes for in-memory bodies; ``None`` for one-shot
+        #: streams, where only ``body_digest`` is available.
+        body: bytes | None
+        #: SHA-256 hex digest (ASCII bytes) of the wire body, or the
+        #: caller-supplied digest for a one-shot body.
+        body_digest: bytes | None
+
+    #: A signer receives the finalized :class:`SignatureInput` and returns the
+    #: headers (typically a signature header) to attach to the request, or
+    #: ``None`` when there is nothing to add.
+    SignerType: TypeAlias = Callable[[SignatureInput], Mapping[str, str | bytes] | None]
+
     TimeoutType: TypeAlias = float | tuple[float | None, float | None] | None
     ProxiesType: TypeAlias = MutableMapping[str, str]
     HooksType: TypeAlias = dict[str, list[HookType]] | None
@@ -166,6 +190,7 @@ if TYPE_CHECKING:
         stream: bool | None
         verify: VerifyType | None
         cert: CertType
+        signer: SignerType | None
 
     class RequestKwargs(BaseRequestKwargs, total=False):
         """kwargs for request(), options(), head(), delete()."""

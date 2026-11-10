@@ -67,6 +67,7 @@ from .exceptions import (
 from .exceptions import JSONDecodeError as RequestsJSONDecodeError
 from .exceptions import SSLError as RequestsSSLError
 from .hooks import default_hooks
+from .signing import sign_request
 from .status_codes import codes
 from .structures import CaseInsensitiveDict
 from .utils import (
@@ -300,6 +301,10 @@ class Request(RequestHooksMixin):
     :param auth: Auth handler or (user, pass) tuple.
     :param cookies: dictionary or CookieJar of cookies to attach to this request.
     :param hooks: dictionary of callback hooks, for internal usage.
+    :param signer: optional callable producing signature headers from the
+        fully prepared request. It runs after every preparation (including
+        redirects and retries) and always sees the exact bytes that will be
+        sent.
 
     Usage::
 
@@ -319,6 +324,7 @@ class Request(RequestHooksMixin):
     params: _t.ParamsType
     auth: _t.AuthType
     cookies: RequestsCookieJar | CookieJar | dict[str, str] | None
+    signer: _t.SignerType | None
 
     def __init__(
         self,
@@ -332,6 +338,7 @@ class Request(RequestHooksMixin):
         cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,
         hooks: _t.HooksInputType | None = None,
         json: _t.JsonType = None,
+        signer: _t.SignerType | None = None,
     ) -> None:
         # Default empty dicts for dict params.
         data = [] if data is None else data
@@ -353,6 +360,7 @@ class Request(RequestHooksMixin):
         self.params = params
         self.auth = auth
         self.cookies = cookies
+        self.signer = signer
 
     def __repr__(self) -> str:
         return f"<Request [{self.method}]>"
@@ -371,6 +379,7 @@ class Request(RequestHooksMixin):
             auth=self.auth,
             cookies=self.cookies,
             hooks=self.hooks,
+            signer=self.signer,
         )
         return p
 
@@ -403,6 +412,8 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
     body: _t.BodyType
     hooks: dict[str, list[_t.HookType]]
     _body_position: int | object | None
+    signer: _t.SignerType | None
+    _signed_headers: tuple[str, ...]
 
     def __init__(self) -> None:
         #: HTTP verb to send to the server.
@@ -420,6 +431,10 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
         self.hooks = default_hooks()
         #: integer denoting starting position of a readable file-like body.
         self._body_position = None
+        #: optional signer run after the request is fully prepared.
+        self.signer = None
+        #: headers produced by the most recent signing run.
+        self._signed_headers = ()
 
     def prepare(
         self,
@@ -433,10 +448,12 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
         cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,
         hooks: _t.HooksInputType | None = None,
         json: _t.JsonType = None,
+        signer: _t.SignerType | None = None,
     ) -> None:
         """Prepares the entire request with the given parameters."""
 
         url = cast("_t.UriType", url)
+        self.signer = signer
         self.prepare_method(method)
         self.prepare_url(url, params)
         self.prepare_headers(headers)
@@ -450,6 +467,13 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
         # This MUST go after prepare_auth. Authenticators could add a hook
         self.prepare_hooks(hooks)
 
+        # Signing is the final step: the signer observes the exact target,
+        # headers and body summary that will be transmitted, after all
+        # encoding. Re-preparing (e.g. for a redirect) runs this again and
+        # replaces rather than reuses the previous signature.
+        if self.signer is not None:
+            sign_request(self, self.signer)
+
     def __repr__(self) -> str:
         return f"<PreparedRequest [{self.method}]>"
 
@@ -462,6 +486,9 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
         p.body = self.body
         p.hooks = self.hooks
         p._body_position = self._body_position
+        # getattr defaults keep copies of older pickled requests working.
+        p.signer = getattr(self, "signer", None)
+        p._signed_headers = getattr(self, "_signed_headers", ())
         return p
 
     def prepare_method(self, method: str | None) -> None:

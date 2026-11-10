@@ -43,6 +43,7 @@ from .models import (  # noqa: F401
     Request,
     Response,
 )
+from .signing import sign_request
 from .status_codes import codes
 from .structures import CaseInsensitiveDict
 from .utils import (  # noqa: F401
@@ -283,6 +284,14 @@ class SessionRedirectMixin:
             if rewindable:
                 rewind_body(prepared_request)
 
+            # The redirect changed the request target, method, headers and
+            # possibly the body, so the signature carried over by copy() is
+            # stale. Re-sign from the actual bytes that are about to be sent;
+            # if no signer is configured this is a no-op and any pre-existing
+            # signature is preserved unchanged.
+            if prepared_request.signer is not None:
+                sign_request(prepared_request, prepared_request.signer)
+
             # Override the original request.
             req = prepared_request
 
@@ -423,6 +432,7 @@ class Session(SessionRedirectMixin):
     trust_env: bool
     cookies: RequestsCookieJar
     adapters: MutableMapping[str, BaseAdapter]
+    signer: _t.SignerType | None
 
     __attrs__: list[str] = [
         "headers",
@@ -502,6 +512,11 @@ class Session(SessionRedirectMixin):
         self.mount("https://", HTTPAdapter())
         self.mount("http://", HTTPAdapter())
 
+        #: Optional signer applied to every request sent by this session.
+        #: Per-request ``signer`` arguments take precedence. Not persisted by
+        #: pickling because a signer may capture unpicklable credentials.
+        self.signer = None
+
     def __enter__(self) -> Self:
         return self
 
@@ -537,6 +552,9 @@ class Session(SessionRedirectMixin):
         if self.trust_env and not auth and not self.auth:
             auth = get_netrc_auth(url)
 
+        # A per-request signer overrides the session-wide signer.
+        signer = request.signer if request.signer is not None else self.signer
+
         p = PreparedRequest()
         p.prepare(
             method=method.upper(),
@@ -551,6 +569,7 @@ class Session(SessionRedirectMixin):
             auth=merge_setting(auth, self.auth),
             cookies=merged_cookies,
             hooks=merge_hooks(request.hooks, self.hooks),
+            signer=signer,
         )
         return p
 
@@ -572,6 +591,7 @@ class Session(SessionRedirectMixin):
         verify: _t.VerifyType | None = None,
         cert: _t.CertType = None,
         json: _t.JsonType = None,
+        signer: _t.SignerType | None = None,
     ) -> Response:
         """Constructs a :class:`Request <Request>`, prepares it and sends it.
         Returns :class:`Response <Response>` object.
@@ -631,6 +651,7 @@ class Session(SessionRedirectMixin):
             auth=auth,
             cookies=cookies,
             hooks=hooks,
+            signer=signer,
         )
         prep = self.prepare_request(req)
 
@@ -903,6 +924,9 @@ class Session(SessionRedirectMixin):
     def __setstate__(self, state: dict[str, Any]) -> None:
         for attr, value in state.items():
             setattr(self, attr, value)
+        # Signers are not part of the pickled state; restore a safe default.
+        if not hasattr(self, "signer"):
+            self.signer = None
 
 
 def session() -> Session:
