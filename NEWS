@@ -3,6 +3,20 @@
 History
 -------
 
+Unreleased
+~~~~~~~~~~
+
+* Added :class:`parsel.SelectorDocument`, which parses a document once and
+  lets several independent :class:`parsel.Selector` query objects share the
+  parsed tree through :meth:`parsel.SelectorDocument.selector`. Each query
+  object keeps its own namespaces, XPath variables and query options.
+* Mutating a shared query object with :meth:`parsel.Selector.drop` or
+  :meth:`parsel.Selector.remove_namespaces` now works on a private
+  copy-on-write branch, so other query objects sharing the same parsed
+  document are no longer affected.
+* Added the read-only :attr:`parsel.Selector.document` property exposing the
+  parsed document a query object reads from.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 

@@ -4,6 +4,7 @@ packages."""
 from __future__ import annotations
 
 import codecs
+import copy
 import json
 import re
 import typing
@@ -523,6 +524,174 @@ def _compile_jsonpath(query: str) -> Any:
     return find
 
 
+class _QueryView:
+    """Mutation lineage shared by a query object and its nested selectors.
+
+    Every call to :meth:`SelectorDocument.selector` creates a separate view.
+    The first mutation deep-copies the document. The view keeps the map of
+    old nodes to copied nodes, and each query object relocates its own root
+    lazily on the next access, before the tree is changed. Other views keep
+    pointing at the original document and cannot see the mutation.
+
+    Nodes are used as map keys rather than their ``id()``: lxml recycles
+    Python element wrappers, while node hashing and equality follow the
+    underlying C node, so element keys stay valid for the view's lifetime.
+    """
+
+    __slots__ = ("document", "migration")
+
+    def __init__(self, document: SelectorDocument) -> None:
+        self.document = document
+        #: old node -> equivalent node in the mutation branch, if branched
+        self.migration: dict[etree._Element, etree._Element] | None = None
+
+
+class SelectorDocument:
+    """A parsed document that several independent query objects can share.
+
+    The input is parsed only once, no matter how many :class:`Selector`
+    query objects are created with :meth:`selector`. Each query object keeps
+    its own namespaces, XPath variables and query options; only the parsed
+    tree itself is shared.
+
+    Query objects returned by :meth:`selector` are read-only views. Calling a
+    method that modifies the tree, such as :meth:`Selector.drop` or
+    :meth:`Selector.remove_namespaces`, transparently copies the parsed tree
+    (copy-on-write): the mutation only affects the query object that asked
+    for it and query objects derived from it, while every other query object
+    keeps seeing the original document.
+
+    The constructor accepts the same ``text``, ``body``, ``encoding``,
+    ``type``, ``root``, ``base_url`` and ``huge_tree`` arguments as
+    :class:`Selector`.
+    """
+
+    __slots__ = (
+        "__weakref__",
+        "_branch",
+        "_huge_tree",
+        "_root",
+        "_text",
+        "type",
+    )
+
+    #: Query class built by :meth:`selector`; override in a subclass to use
+    #: a custom :class:`Selector` subclass.
+    selector_cls: type[Selector]
+
+    def __init__(
+        self,
+        text: str | None = None,
+        type: str | None = None,  # noqa: A002
+        body: bytes | bytearray = b"",
+        encoding: str = "utf-8",
+        root: Any | None = _NOT_SET,
+        base_url: str | None = None,
+        huge_tree: bool = True,
+    ) -> None:
+        if type not in ("html", "json", "text", "xml", None):
+            raise ValueError(f"Invalid type: {type}")
+
+        if text is not None:
+            if root is not _NOT_SET:
+                warnings.warn(
+                    "SelectorDocument got both text and root, root is being ignored.",
+                    stacklevel=2,
+                )
+            if not isinstance(text, str):
+                msg = f"text argument should be of type str, got {text.__class__}"
+                raise TypeError(msg)
+            parsed_root, parsed_type = _get_root_and_type_from_text(
+                text,
+                input_type=type,
+                base_url=base_url,
+                huge_tree=huge_tree,
+            )
+        elif body:
+            if not isinstance(body, (bytes, bytearray)):
+                msg = (
+                    "body argument should be of type bytes or bytearray, got "
+                    f"{body.__class__}"
+                )
+                raise TypeError(msg)
+            parsed_root, parsed_type = _get_root_and_type_from_bytes(
+                body=bytes(body),
+                encoding=encoding,
+                input_type=type,
+                base_url=base_url,
+                huge_tree=huge_tree,
+            )
+        elif root is _NOT_SET:
+            raise ValueError(
+                "SelectorDocument needs text, body, or root arguments"
+            )
+        else:
+            parsed_root = root
+            parsed_type = _get_root_type(root, input_type=type)
+
+        self._root = parsed_root
+        self.type = parsed_type
+        self._text = text
+        self._huge_tree = huge_tree
+        self._branch = False
+
+    @classmethod
+    def _from_parsed(
+        cls,
+        root: Any,
+        type_: str,
+        text: str | None,
+        huge_tree: bool,
+    ) -> Self:
+        """Wrap an already parsed root without parsing again."""
+        document = cls.__new__(cls)
+        document._root = root
+        document.type = type_
+        document._text = text
+        document._huge_tree = huge_tree
+        document._branch = False
+        return document
+
+    def selector(
+        self,
+        namespaces: Mapping[str, str] | None = None,
+        _expr: str | None = None,
+    ) -> Selector:
+        """Return an independent query object over this parsed document.
+
+        ``namespaces`` is private to the returned query object and does not
+        affect the document or other query objects.
+        """
+        return self.selector_cls(
+            _view=_QueryView(self), namespaces=namespaces, _expr=_expr
+        )
+
+    @property
+    def root(self) -> Any:
+        """The parsed root object (an lxml element for HTML/XML)."""
+        return self._root
+
+    def copy_for_mutation(self) -> SelectorDocument:
+        """Return a private, deep-copied branch of this document."""
+        if isinstance(self._root, etree._Element):
+            # Copy the whole underlying tree so that parent chains survive,
+            # then anchor the branch at the equivalent of this document root.
+            tree = self._root.getroottree()
+            full_copy = copy.deepcopy(tree.getroot())
+            if self._root.getparent() is None:
+                branch_root = full_copy
+            else:
+                path = tree.getpath(self._root)
+                branch_root = full_copy.getroottree().xpath(path)[0]
+        else:
+            branch_root = copy.deepcopy(self._root)
+        branch = self._from_parsed(
+            branch_root, self.type, self._text, self._huge_tree
+        )
+        branch._branch = True
+        return branch
+
+
 class Selector:
     """Wrapper for input data in HTML, JSON, or XML format, that allows
     selecting parts of it using selection expressions.
@@ -555,11 +724,9 @@ class Selector:
     __slots__ = [
         "__weakref__",
         "_expr",
-        "_huge_tree",
-        "_text",
-        "body",
+        "_root",
+        "_view",
         "namespaces",
-        "root",
         "type",
     ]
 
@@ -587,55 +754,149 @@ class Selector:
         base_url: str | None = None,
         _expr: str | None = None,
         huge_tree: bool = True,
+        _view: _QueryView | None = None,
     ) -> None:
-        self.root: Any
-        if type not in ("html", "json", "text", "xml", None):
-            raise ValueError(f"Invalid type: {type}")
-
-        if text is not None:
-            if root is not _NOT_SET:
-                warnings.warn(
-                    "Selector got both text and root, root is being ignored.",
-                    stacklevel=2,
-                )
-            if not isinstance(text, str):
-                msg = f"text argument should be of type str, got {text.__class__}"
-                raise TypeError(msg)
-
-            root, type = _get_root_and_type_from_text(  # noqa: A001
-                text,
-                input_type=type,
-                base_url=base_url,
-                huge_tree=huge_tree,
-            )
-            self.root = root
-            self.type = type
-        elif body:
-            if not isinstance(body, (bytes, bytearray)):
-                msg = f"body argument should be of type bytes or bytearray, got {body.__class__}"
-                raise TypeError(msg)
-            root, type = _get_root_and_type_from_bytes(  # noqa: A001
-                body=bytes(body),
-                encoding=encoding,
-                input_type=type,
-                base_url=base_url,
-                huge_tree=huge_tree,
-            )
-            self.root = root
-            self.type = type
-        elif root is _NOT_SET:
-            raise ValueError("Selector needs text, body, or root arguments")
+        if _view is not None:
+            # Query view created by a shared SelectorDocument: no parsing.
+            self._view = _view
+            self._root = _view.document.root
+            self.type = _view.document.type
         else:
-            self.root = root
-            self.type = _get_root_type(root, input_type=type)
+            if type not in ("html", "json", "text", "xml", None):
+                raise ValueError(f"Invalid type: {type}")
+
+            if text is not None:
+                if root is not _NOT_SET:
+                    warnings.warn(
+                        "Selector got both text and root, root is being ignored.",
+                        stacklevel=2,
+                    )
+                if not isinstance(text, str):
+                    msg = f"text argument should be of type str, got {text.__class__}"
+                    raise TypeError(msg)
+
+                root, type = _get_root_and_type_from_text(  # noqa: A001
+                    text,
+                    input_type=type,
+                    base_url=base_url,
+                    huge_tree=huge_tree,
+                )
+            elif body:
+                if not isinstance(body, (bytes, bytearray)):
+                    msg = (
+                        "body argument should be of type bytes or bytearray, got "
+                        f"{body.__class__}"
+                    )
+                    raise TypeError(msg)
+                root, type = _get_root_and_type_from_bytes(  # noqa: A001
+                    body=bytes(body),
+                    encoding=encoding,
+                    input_type=type,
+                    base_url=base_url,
+                    huge_tree=huge_tree,
+                )
+            elif root is _NOT_SET:
+                raise ValueError("Selector needs text, body, or root arguments")
+            else:
+                type = _get_root_type(root, input_type=type)  # noqa: A001
+
+            self._root = root
+            self.type = type
+            # A standalone selector owns a private document over its root.
+            self._view = _QueryView(
+                SelectorDocument._from_parsed(root, self.type, text, huge_tree)
+            )
 
         self.namespaces = dict(self._default_namespaces)
         if namespaces is not None:
             self.namespaces.update(namespaces)
 
         self._expr = _expr
-        self._huge_tree = huge_tree
-        self._text = text
+
+    @property
+    def root(self) -> Any:
+        """The node this query object points at in its current document.
+
+        After a copy-on-write mutation the node is relocated lazily to the
+        equivalent node in the mutation branch on first access.
+        """
+        migration = self._view.migration
+        root = self._root
+        if migration is not None and isinstance(root, etree._Element):
+            # Branch nodes are not keys of the map, so this becomes a no-op
+            # once the selector has been relocated.
+            relocated = migration.get(root)
+            if relocated is not None:
+                self._root = relocated
+                return relocated
+        return root
+
+    @root.setter
+    def root(self, value: Any) -> None:
+        self._root = value
+
+    @property
+    def document(self) -> SelectorDocument:
+        """The parsed document this query object currently reads from.
+
+        Query objects created from the same :class:`SelectorDocument` start
+        on that document; a mutation moves the mutating lineage onto a
+        private copy-on-write branch.
+        """
+        return self._view.document
+
+    @property
+    def _text(self) -> str | None:
+        # Kept for backward compatibility with code reading this private
+        # attribute; the text now lives on the shared document.
+        return self._view.document._text
+
+    def _child_selector(
+        self, root: Any, query: str, type_: str | None = None
+    ) -> Self:
+        """Build a nested query object in the same mutation lineage."""
+        child_type = type_ or _xml_or_html(self.type)
+        if type(self).__init__ is Selector.__init__:
+            # Fast path: allocate directly and skip the parsing constructor
+            # and the default-namespace dictionary that would be replaced.
+            child = self.__class__.__new__(self.__class__)
+            child._view = self._view
+            child._root = root
+            child.type = child_type
+            child.namespaces = dict(self.namespaces)
+            child._expr = query
+            return child
+        # Subclasses with a custom __init__ keep using the public root= path,
+        # then join the shared mutation lineage afterwards.
+        child = self.__class__(
+            root=root,
+            _expr=query,
+            namespaces=self.namespaces,
+            type=child_type,
+        )
+        child._view = self._view
+        return child
+
+    def _mutating_document(self) -> SelectorDocument:
+        """Return a document this query object may modify.
+
+        The first mutation of a lineage that shares an unmodified document
+        creates a private copy-on-write branch and records the old-to-new
+        node map, so each query object relocates lazily on its next
+        :attr:`root` access. Query objects in other lineages keep reading
+        the original tree.
+        """
+        document = self._view.document
+        if not document._branch:
+            branch = document.copy_for_mutation()
+            old_root = document.root
+            if isinstance(old_root, etree._Element):
+                self._view.migration = dict(
+                    zip(old_root.iter(), branch.root.iter(), strict=True)
+                )
+            self._view.document = branch
+            document = branch
+        return document
 
     def __getstate__(self) -> Any:
         raise TypeError("can't pickle Selector objects")
@@ -772,19 +1033,12 @@ class Selector:
                     return typing.cast(
                         "SelectorList[Self]",
                         self.selectorlist_cls(
-                            [
-                                self.__class__(
-                                    root=self.root,
-                                    _expr=query,
-                                    namespaces=self.namespaces,
-                                    type=self.type,
-                                )
-                            ]
+                            [self._child_selector(self.root, query, self.type)]
                         ),
                     )
                 return typing.cast("SelectorList[Self]", self.selectorlist_cls([]))
         else:
-            root = self._get_root(self._text or "", type_="html")
+            root = self._get_root(self._view.document._text or "", type_="html")
 
         nsp = dict(self.namespaces)
         if namespaces is not None:
@@ -798,15 +1052,7 @@ class Selector:
         if not isinstance(result, list):
             result = [result]
 
-        result = [
-            self.__class__(
-                root=x,
-                _expr=query,
-                namespaces=self.namespaces,
-                type=_xml_or_html(self.type),
-            )
-            for x in result
-        ]
+        result = [self._child_selector(node, query) for node in result]
         return typing.cast("SelectorList[Self]", self.selectorlist_cls(result))
 
     def css(self, query: str) -> SelectorList[Self]:
@@ -926,10 +1172,14 @@ class Selector:
         Remove all namespaces, allowing to traverse the document using
         namespace-less xpaths. See :ref:`removing-namespaces`.
         For JSON selectors, this method does nothing.
+
+        This modifies a private copy-on-write branch of the document, so
+        other query objects sharing the same parsed document are unaffected.
         """
         if self.type == "json":
             return
 
+        self._mutating_document()
         for el in self.root.iter("*"):
             if el.tag.startswith("{"):
                 el.tag = el.tag.split("}", 1)[1]
@@ -943,6 +1193,11 @@ class Selector:
     def drop(self) -> None:
         """
         Drop matched nodes from the parent element.
+
+        The first drop on a query object sharing a document creates a
+        private copy-on-write branch: other query objects keep seeing the
+        original tree, while this query object and ones derived from it see
+        the dropped node.
         """
         try:
             parent = self.root.getparent()
@@ -959,21 +1214,27 @@ class Selector:
             "The node you're trying to remove has no parent, "
             "are you trying to remove a root element?"
         )
+        if parent is None:
+            raise CannotDropElementWithoutParent(no_parent_message)
+
+        # Validate first so an impossible drop never creates a private copy.
+        self._mutating_document()
+        root = self.root
         try:
             if self.type == "xml":
-                if parent is None:
-                    raise CannotDropElementWithoutParent(no_parent_message)
                 # Unlike HtmlElement.drop_tree(), _Element.remove() also
                 # removes the tail text, so we need to preserve it manually
-                if self.root.tail:
-                    previous = self.root.getprevious()
+                if root.tail:
+                    previous = root.getprevious()
                     if previous is not None:
-                        previous.tail = (previous.tail or "") + self.root.tail
+                        previous.tail = (previous.tail or "") + root.tail
                     else:
-                        parent.text = (parent.text or "") + self.root.tail
-                parent.remove(self.root)
+                        root.getparent().text = (
+                            root.getparent().text or ""
+                        ) + root.tail
+                root.getparent().remove(root)
             else:
-                typing.cast("html.HtmlElement", self.root).drop_tree()
+                typing.cast("html.HtmlElement", root).drop_tree()
         except (AttributeError, AssertionError):
             # 'NoneType' object has no attribute 'drop_tree'
             raise CannotDropElementWithoutParent(no_parent_message)
@@ -1005,3 +1266,6 @@ class Selector:
     def __repr__(self) -> str:
         data = repr(shorten(str(self.get()), width=40))
         return f"<{type(self).__name__} query={self._expr!r} data={data}>"
+
+
+SelectorDocument.selector_cls = Selector

@@ -592,6 +592,62 @@ point to text or to an attribute value, such as those from
 element to locate.
 
 
+Sharing a parsed document
+-------------------------
+
+When many independent field queries run over the same large page, building a
+:class:`~parsel.selector.Selector` per query re-parses the page every time.
+Parse the page once into a :class:`~parsel.selector.SelectorDocument` and create
+as many independent query objects as needed with
+:meth:`~parsel.selector.SelectorDocument.selector`. Each query object keeps its
+own namespaces, XPath variables and query options, while they all share the
+single parsed tree::
+
+    >>> from parsel import SelectorDocument
+    >>> page = (
+    ...     "<html><body><ul>"
+    ...     "<li data-id='a'>A</li><li data-id='b'>B</li><li data-id='c'>C</li>"
+    ...     "</ul></body></html>"
+    ... )
+    >>> document = SelectorDocument(text=page)
+    >>> ids = document.selector()
+    >>> names = document.selector()
+    >>> ids.css("li::attr(data-id)").getall()
+    ['a', 'b', 'c']
+    >>> names.xpath("//li/text()").getall()
+    ['A', 'B', 'C']
+    >>> ids.root is document.root
+    True
+
+The input is parsed only once, no matter how many query objects are created.
+Namespaces registered on one query object, and variables passed to one
+``xpath()`` call, never leak into the others::
+
+    >>> ids.register_namespace("p", "http://example.org/ns")
+    >>> "p" not in names.namespaces
+    True
+
+A query object returned by a shared document is read-only with respect to the
+other query objects. The first mutating call, such as
+:meth:`~parsel.selector.Selector.drop` or
+:meth:`~parsel.selector.Selector.remove_namespaces`, transparently deep-copies
+the parsed tree for that query object's lineage (copy-on-write). Other query
+objects keep reading the original document and never see the change::
+
+    >>> ids.css("li")[0].drop()
+    >>> ids.css("li").getall()
+    ['<li data-id="b">B</li>', '<li data-id="c">C</li>']
+    >>> names.css("li").getall()
+    ['<li data-id="a">A</li>', '<li data-id="b">B</li>', '<li data-id="c">C</li>']
+
+The copy is created lazily on the first mutation, so read-only query objects
+pay no copy cost, and the original document and its private branch are both
+released once nothing references them. Standalone
+:class:`~parsel.selector.Selector` objects keep their previous behavior: their
+:attr:`~parsel.selector.Selector.document` property simply returns a private
+document over their own root.
+
+
 Removing elements
 -----------------
 
