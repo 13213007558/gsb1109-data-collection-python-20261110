@@ -1,0 +1,40 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:inner-cl-response>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/cl
+Content-Length: 122
+
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 100
+
+only sixty bytes are stored here 0123456789abcdefghijklm
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:inner-chunk-response>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/chunked
+Content-Length: 65
+
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+4
+abcd
+0a
+12345
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:inner-good-response>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/good
+Content-Length: 43
+
+HTTP/1.1 200 OK
+Content-Length: 5
+
+hello
+

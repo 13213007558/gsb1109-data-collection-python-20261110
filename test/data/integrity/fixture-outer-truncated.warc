@@ -1,0 +1,22 @@
+WARC/1.0
+WARC-Type: warcinfo
+WARC-Record-ID: <urn:uuid:outer-good>
+WARC-Date: 2026-11-10T00:00:00Z
+Content-Length: 46
+
+software: test
+format: WARC File Format 1.0
+
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:outer-cut>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/outer-cut
+Content-Length: 178
+
+HTTP/1.1 200 OK
+Content-Length: 20
+
+twenty bytes only!!
+

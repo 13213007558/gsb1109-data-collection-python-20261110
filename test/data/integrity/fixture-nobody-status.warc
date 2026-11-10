@@ -1,0 +1,25 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:status-204>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/no-content
+Content-Length: 52
+
+HTTP/1.1 204 No Content
+Cache-Control: no-store
+
+
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:status-304>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/not-modified
+Content-Length: 62
+
+HTTP/1.1 304 Not Modified
+ETag: "v1"
+Content-Length: 128
+
+
+

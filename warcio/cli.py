@@ -3,6 +3,7 @@ from argparse import ArgumentParser, RawTextHelpFormatter
 from warcio.indexer import Indexer
 from warcio.checker import Checker
 from warcio.extractor import Extractor
+from warcio.integritychecker import IntegrityCheckRunner
 from warcio.recompressor import Recompressor
 
 
@@ -58,6 +59,25 @@ def main(args=None):
     check.add_argument('-v', '--verbose', action='store_true')
     check.set_defaults(func=checker)
 
+    integrity = subparsers.add_parser(
+        'integrity',
+        help='Offline layered integrity check (WARC boundary, HTTP '
+             'Content-Length/chunked framing, decoded payload)',
+        description='Check WARC record boundaries, inner HTTP message '
+                    'framing and decoded payloads independently. The input '
+                    'files are opened read-only. Verdicts are complete, '
+                    'incomplete and inconclusive, with per-record evidence.')
+    integrity.add_argument('inputs', nargs='+')
+    integrity.add_argument('--json', action='store_true',
+                           help='emit machine-readable JSON reports')
+    integrity.add_argument('--only',
+                           choices=['complete', 'incomplete',
+                                    'inconclusive'],
+                           help='only show records with this verdict')
+    integrity.add_argument('-q', '--quiet', action='store_true',
+                           help='suppress the summary line in text output')
+    integrity.set_defaults(func=integrity_checker)
+
     cmd = parser.parse_args(args=args)
     cmd.func(cmd)
 
@@ -78,6 +98,12 @@ def indexer(cmd):
 def checker(cmd):
     _checker = Checker(cmd)
     sys.exit(_checker.process_all())
+
+
+# ============================================================================
+def integrity_checker(cmd):
+    _runner = IntegrityCheckRunner(cmd)
+    sys.exit(_runner.process_all())
 
 
 # ============================================================================

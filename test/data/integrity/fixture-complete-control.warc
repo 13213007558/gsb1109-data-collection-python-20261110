@@ -1,0 +1,25 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:control-response>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/control
+Content-Length: 111
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 47
+
+<html><body>complete control body</body></html>
+
+WARC/1.0
+WARC-Type: request
+WARC-Record-ID: <urn:uuid:control-request>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/control
+Content-Length: 37
+
+GET / HTTP/1.1
+Host: example.com
+
+
+

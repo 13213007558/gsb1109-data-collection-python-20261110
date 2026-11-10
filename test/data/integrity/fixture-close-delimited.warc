@@ -1,0 +1,12 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:close-delimited>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/close
+Content-Length: 80
+
+HTTP/1.1 200 OK
+Connection: close
+
+some body bytes with no length declaration
+

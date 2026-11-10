@@ -1,3 +1,12 @@
+Unreleased
+~~~~~~~~~~
+
+- Add an offline, layered integrity checker (``warcio integrity`` command and
+  the ``warcio.integritychecker`` module) that verifies WARC record
+  boundaries, inner HTTP ``Content-Length``/chunked framing and decoded
+  payloads independently, with complete/incomplete/inconclusive verdicts and
+  per-record evidence. Input files are opened read-only.
+
 1.8.2
 ~~~~~
 

@@ -369,6 +369,50 @@ of WARC records, if possible. An exit value of 1 indicates a failure.
 ``warcio check -v`` will print verbose output for each record in the
 WARC file.
 
+Integrity Check
+~~~~~~~~~~~~~~~
+
+Reading a record successfully only proves that the outer WARC framing could
+be walked; it does not prove that the HTTP message stored inside the block is
+itself complete. The ``warcio integrity`` command therefore checks three
+layers independently and never lets an outer layer vouch for an inner one:
+
+- ``warc``: the record boundary -- the declared WARC ``Content-Length``
+  versus the block octets actually present, the ``CRLF CRLF`` separator, the
+  next record magic, and for record-per-member gzip the member CRC32/ISIZE.
+- ``http``: the inner message framing -- HTTP ``Content-Length`` octets
+  versus the body octets present, or strict ``Transfer-Encoding: chunked``
+  delimiters. HEAD responses, body-less status codes (1xx/204/304),
+  interrupted transfers and contradictory length declarations are handled as
+  distinct cases.
+- ``payload``: the decoded body -- clean end of any ``Content-Encoding``
+  stream and the decoded octet count, kept separate from the wire/block
+  lengths.
+
+Each length is labelled with the layer whose octets it counts: the WARC
+``Content-Length`` counts record-block octets, the HTTP ``Content-Length``
+counts wire body octets (still content-encoded), and the decoded payload
+length counts post-decoding octets. Every record is reported with its offset,
+``WARC-Record-ID`` and the concrete evidence behind each verdict, which is one
+of ``complete``, ``incomplete`` (a delimiter or byte count proves octets are
+missing or a stream was interrupted) or ``inconclusive`` (no trustworthy
+inner length exists, or length declarations contradict). Input files are
+opened read-only; an exit value of 1 indicates at least one incomplete record
+or file-level framing error.
+
+::
+
+    warcio integrity ./test/data/example.warc
+    warcio integrity --json --only incomplete ./crawl.warc.gz
+
+The Python API mirrors the command and returns traceable per-record reports::
+
+    from warcio.integritychecker import check_path
+
+    reports, file_error = check_path('./crawl.warc.gz')
+    for report in reports:
+        print(report.offset, report.verdict, report.to_dict()['layers'])
+
 Recompress
 ~~~~~~~~~~
 

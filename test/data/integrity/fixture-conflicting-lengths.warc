@@ -1,0 +1,53 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:conflict-both>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/both
+Content-Length: 80
+
+HTTP/1.1 200 OK
+Content-Length: 4
+Transfer-Encoding: chunked
+
+4
+wiki
+0
+
+
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:conflict-dup>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/dup-cl
+Content-Length: 62
+
+HTTP/1.1 200 OK
+Content-Length: 5
+Content-Length: 9
+
+hello
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:conflict-invalid>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/bad-cl
+Content-Length: 54
+
+HTTP/1.1 200 OK
+Content-Length: not-a-number
+
+hello
+
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:conflict-204>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/204-body
+Content-Length: 35
+
+HTTP/1.1 204 No Content
+
+surprise
+

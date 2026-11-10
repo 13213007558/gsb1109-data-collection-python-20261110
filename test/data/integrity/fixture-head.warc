@@ -1,0 +1,26 @@
+WARC/1.0
+WARC-Type: response
+WARC-Record-ID: <urn:uuid:head-response>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/
+Content-Length: 65
+
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 55
+
+
+
+WARC/1.0
+WARC-Type: request
+WARC-Record-ID: <urn:uuid:head-request>
+WARC-Date: 2026-11-10T00:00:00Z
+WARC-Target-URI: http://example.com/
+WARC-Concurrent-To: <urn:uuid:head-response>
+Content-Length: 38
+
+HEAD / HTTP/1.1
+Host: example.com
+
+
+
