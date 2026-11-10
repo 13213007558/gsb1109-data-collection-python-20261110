@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
-from parsel import Selector
+from parsel import EditBatch, Selector
+from parsel.edits import DropElements, SetAttribute, apply_edits
+
+if TYPE_CHECKING:
+    from lxml import etree
 
 
 def correct() -> None:
@@ -16,6 +21,19 @@ def correct() -> None:
     xpath_values: list[str] = selector.xpath(
         "//somens:a/text()", namespaces={"somens": "http://scrapy.org"}
     ).extract()
+
+    batch: EditBatch = (
+        selector.edit_batch()
+        .drop(selector.css("li"))
+        .replace(selector.css("a"), "<b/>")
+        .set_attribute(selector.css("ul"), "data-clean", "1")
+        .remove_attribute(selector.css("ul"), "data-legacy")
+    )
+    batch.add(DropElements.from_selectors(selector.css("p")))
+    batch.add(SetAttribute.from_selectors(selector.css("ul"), "k", "v"))
+    cleaned: Selector = selector.apply_edits(batch)
+    in_place: Selector = selector.apply_edits(batch, in_place=True)
+    new_root: etree._Element = apply_edits(selector.root, batch)
 
     class MySelector(Selector):
         def my_own_func(self) -> int:

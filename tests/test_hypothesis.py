@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+from itertools import permutations
 from typing import Any, TypeAlias
 
 import pytest
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
-from parsel import Selector
+from parsel import EditConflictError, Selector
+from parsel.edits import DropElements
 from parsel.utils import flatten, shorten
 
 json_values: st.SearchStrategy[object] = st.recursive(
@@ -211,6 +213,116 @@ def test_drop_keeps_surrounding_text(
     sel.xpath("//e[@id=$id]", id=f"n{index}").drop()
     start, end = spans[index]
     assert "".join(sel.root.itertext()) == text[:start] + text[end:]
+
+
+def _ancestor_free_indices(reference: Selector, chosen: list[int]) -> list[int]:
+    """Drop any chosen node whose ancestor is chosen as well."""
+    elements = {
+        index: reference.xpath("//e[@id=$id]", id=f"n{index}")[0].root
+        for index in chosen
+    }
+    return [
+        index
+        for index, element in elements.items()
+        if not any(other in element.iterancestors() for other in elements.values())
+    ]
+
+
+@pytest.mark.parametrize("type_", ["html", "xml"])
+@given(children=st.lists(trees, max_size=4), data=st.data())
+def test_batched_drop_matches_sequential_drop(
+    type_: str, children: list[_Tree], data: st.DataObject
+) -> None:
+    markup, _, spans = _render_tree(children)
+    chosen = data.draw(
+        st.lists(
+            st.integers(min_value=0, max_value=len(spans) - 1),
+            max_size=len(spans),
+            unique=True,
+        )
+    )
+    reference = Selector(text=f"<root>{markup}</root>", type=type_)
+    indices = _ancestor_free_indices(reference, chosen)
+
+    sequential = Selector(text=f"<root>{markup}</root>", type=type_)
+    for index in indices:
+        sequential.xpath("//e[@id=$id]", id=f"n{index}").drop()
+
+    batch = reference.edit_batch()
+    for index in indices:
+        batch.add(
+            DropElements.from_selectors(reference.xpath("//e[@id=$id]", id=f"n{index}"))
+        )
+    result = reference.apply_edits(batch)
+
+    assert result.get() == sequential.get()
+
+
+@pytest.mark.parametrize("type_", ["html", "xml"])
+@given(children=st.lists(trees, max_size=4), data=st.data())
+def test_batched_edits_are_order_independent(
+    type_: str, children: list[_Tree], data: st.DataObject
+) -> None:
+    markup, _, spans = _render_tree(children)
+    chosen = data.draw(
+        st.lists(
+            st.integers(min_value=0, max_value=len(spans) - 1),
+            max_size=len(spans),
+            unique=True,
+        )
+    )
+    reference = Selector(text=f"<root>{markup}</root>", type=type_)
+    indices = _ancestor_free_indices(reference, chosen)
+    if len(indices) < 2:
+        return
+
+    edits = [
+        DropElements.from_selectors(reference.xpath("//e[@id=$id]", id=f"n{index}"))
+        for index in indices
+    ]
+    # Copy mode leaves the reference tree untouched while edits keep pointing
+    # at its elements, so every permutation can be applied against it.
+    outputs = {
+        reference.apply_edits(list(order)).get() for order in permutations(edits)
+    }
+    assert len(outputs) == 1
+
+
+@pytest.mark.parametrize("type_", ["html", "xml"])
+@given(children=st.lists(trees, min_size=1, max_size=4), data=st.data())
+def test_nested_drops_conflict_and_keep_tree(
+    type_: str, children: list[_Tree], data: st.DataObject
+) -> None:
+    markup, _, spans = _render_tree(children)
+    reference = Selector(text=f"<root>{markup}</root>", type=type_)
+    ancestor_index = data.draw(st.integers(min_value=0, max_value=len(spans) - 1))
+    ancestor = reference.xpath("//e[@id=$id]", id=f"n{ancestor_index}")[0].root
+    descendant_indices = [
+        index
+        for index in range(len(spans))
+        if index != ancestor_index
+        and ancestor
+        in reference.xpath("//e[@id=$id]", id=f"n{index}")[0].root.iterancestors()
+    ]
+    if not descendant_indices:
+        return
+    descendant_index = data.draw(st.sampled_from(descendant_indices))
+
+    before = reference.get()
+    batch = reference.edit_batch()
+    batch.add(
+        DropElements.from_selectors(
+            reference.xpath("//e[@id=$id]", id=f"n{ancestor_index}")
+        )
+    )
+    batch.add(
+        DropElements.from_selectors(
+            reference.xpath("//e[@id=$id]", id=f"n{descendant_index}")
+        )
+    )
+    with pytest.raises(EditConflictError):
+        reference.apply_edits(batch)
+    assert reference.get() == before
 
 
 @given(st.text(), st.integers(min_value=0, max_value=50))

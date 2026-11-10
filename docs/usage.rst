@@ -626,6 +626,124 @@ Example removing an ad from a blog post:
     ['Content paragraph', '\n        \n    ', 'More content']
 
 
+Applying several edits together
+-------------------------------
+
+Cleaning a document often means applying several changes in one pass: drop the
+ads, rewrite some links, and add or remove attributes. Calling :meth:`Selector.drop`
+between selections works, but each call mutates the tree immediately, so later
+selectors see a different document and a failure halfway through leaves the tree
+only partially edited.
+
+:meth:`Selector.edit_batch` returns an :class:`~parsel.edits.EditBatch` that
+collects edits instead. Every selector is evaluated on the unmodified tree when
+the edit is added. The tree is touched only when
+:meth:`~parsel.edits.EditBatch.apply` or :meth:`Selector.apply_edits` runs,
+after the whole batch has been checked.
+
+    >>> from parsel import Selector
+    >>> doc = """
+    ... <article>
+    ...     <p>Read the <a href="http://old.example/post">old post</a>.</p>
+    ...     <div class="ad">Ad content<a href="http://ad.example">Ad link</a></div>
+    ...     <p>More content</p>
+    ... </article>
+    ... """
+    >>> sel = Selector(text=doc)
+    >>> batch = (
+    ...     sel.edit_batch()
+    ...     .drop(sel.css("div.ad"))
+    ...     .replace(
+    ...         sel.css("a[href='http://old.example/post']"),
+    ...         '<a href="https://new.example/post">old post</a>',
+    ...     )
+    ...     .set_attribute(sel.css("article"), "data-cleaned", "1")
+    ... )
+    >>> cleaned = sel.apply_edits(batch)
+    >>> cleaned.css("div.ad").getall()
+    []
+    >>> cleaned.css("a::attr(href)").getall()
+    ['https://new.example/post']
+    >>> cleaned.css("article::attr(data-cleaned)").get()
+    '1'
+
+The available edits are:
+
+- :meth:`~parsel.edits.EditBatch.drop` to remove elements,
+- :meth:`~parsel.edits.EditBatch.replace` to swap elements for parsed markup,
+- :meth:`~parsel.edits.EditBatch.set_attribute` and
+  :meth:`~parsel.edits.EditBatch.remove_attribute` to change attributes.
+
+Copy versus in-place mode
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default the edits are applied to a deep copy of the tree: ``apply_edits``
+returns a new selector and the original tree is left untouched, which is the
+safe default when several cleaned variants are derived from one document.
+
+    >>> len(sel.css("div.ad"))
+    1
+
+Pass ``in_place=True`` to mutate the tree wrapped by the selector instead. The
+same selector is then returned.
+
+    >>> in_place = Selector(text="<html><body><b>x</b>tail</body></html>")
+    >>> result = in_place.apply_edits(
+    ...     in_place.edit_batch().drop(in_place.css("b")), in_place=True
+    ... )
+    >>> result is in_place
+    True
+    >>> in_place.get()
+    '<html><body>tail</body></html>'
+
+Tail text and namespaces
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Removing or replacing an element never discards the text that follows it (its
+tail), and namespaced attributes are preserved. Namespaced attribute names use
+the Clark notation ``{namespace-uri}local-name``.
+
+    >>> xml_sel = Selector(
+    ...     text='<a xmlns:ns="http://ns.example"><b/>tail<c ns:h="1"/></a>',
+    ...     type="xml",
+    ... )
+    >>> batch = (
+    ...     xml_sel.edit_batch()
+    ...     .drop(xml_sel.xpath("//b"))
+    ...     .set_attribute(xml_sel.xpath("//c"), "{http://ns.example}k", "v")
+    ... )
+    >>> xml_sel.apply_edits(batch).get()
+    '<a xmlns:ns="http://ns.example">tail<c ns:h="1" ns:k="v"/></a>'
+
+Conflicting edits
+~~~~~~~~~~~~~~~~~
+
+The batch is validated before anything is applied. Edits that target the same
+node, or an ancestor and one of its descendants, or that change the same
+attribute on the same element, conflict. In that case
+:class:`~parsel.edits.EditConflictError` is raised and the two offending edits
+are exposed on its ``edits`` attribute; the tree is never left half-edited.
+
+    >>> from parsel import EditConflictError
+    >>> conflict_sel = Selector(text="<html><body><p><b>x</b></p></body></html>")
+    >>> conflicting = (
+    ...     conflict_sel.edit_batch()
+    ...     .drop(conflict_sel.css("p"))
+    ...     .replace(conflict_sel.css("b"), "<i/>")
+    ... )
+    >>> try:
+    ...     conflict_sel.apply_edits(conflicting)
+    ... except EditConflictError as exc:
+    ...     print(type(exc.edits[0]).__name__, type(exc.edits[1]).__name__)
+    DropElements ReplaceElements
+    >>> len(conflict_sel.css("b"))
+    1
+
+Because all selectors are evaluated up front and the checks do not depend on
+application order, applying the same set of non-conflicting edits in any order
+produces the same output.
+
+
 Using EXSLT extensions
 ----------------------
 

@@ -3,6 +3,20 @@
 History
 -------
 
+1.13.0 (unreleased)
+~~~~~~~~~~~~~~~~~~~
+
+* Added batched tree edits. :meth:`parsel.Selector.edit_batch` returns an
+  :class:`parsel.edits.EditBatch` that collects drops, replacements and
+  attribute changes, all evaluated against the unmodified tree, and applies
+  them together through :meth:`parsel.Selector.apply_edits` or
+  :func:`parsel.edits.apply_edits`. Conflicting edits (same node, ancestor and
+  descendant, or the same attribute on one element) raise
+  :class:`parsel.edits.EditConflictError` before the tree is touched, so a
+  batch never leaves a half-edited tree. Edits apply to a deep copy by default
+  or in place, preserve tail text and namespaced attributes, and produce the
+  same result regardless of their order.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 

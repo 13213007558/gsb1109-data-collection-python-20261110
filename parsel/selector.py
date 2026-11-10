@@ -25,10 +25,12 @@ import jmespath
 from lxml import etree, html
 
 from .csstranslator import GenericTranslator, HTMLTranslator
+from .edits import BatchEdit, EditBatch
+from .edits import apply_edits as _apply_edits
 from .utils import extract_regex, flatten, iflatten, shorten
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from re import Pattern
 
 
@@ -977,6 +979,55 @@ class Selector:
         except (AttributeError, AssertionError):
             # 'NoneType' object has no attribute 'drop_tree'
             raise CannotDropElementWithoutParent(no_parent_message)
+
+    def edit_batch(self, edits: Iterable[BatchEdit] = ()) -> EditBatch:
+        """Return an :class:`~parsel.edits.EditBatch` bound to this tree.
+
+        Use it to collect several edits (drops, replacements and attribute
+        changes) and apply them together after they have been checked for
+        conflicts::
+
+            batch = selector.edit_batch()
+            batch.drop(selector.css(".ad"))
+            batch.replace(selector.css("a.old"), '<a href="/new">x</a>')
+            new_root = batch.apply(selector.root)
+
+        Only HTML and XML selectors support batched edits.
+        """
+        if self.type not in ("html", "xml"):
+            raise ValueError(
+                f"Cannot collect tree edits on a Selector of type {self.type!r}"
+            )
+        return EditBatch(edits)
+
+    def apply_edits(
+        self,
+        edits: EditBatch | Iterable[BatchEdit],
+        *,
+        in_place: bool = False,
+    ) -> Self:
+        """Apply a batch of edits to the tree and return a new selector.
+
+        See :func:`parsel.edits.apply_edits`. When *in_place* is ``False``
+        (the default), the edits are applied to a deep copy of the tree and a
+        selector wrapping the copy is returned; this selector keeps its own
+        tree. When *in_place* is ``True``, the tree is modified in place and
+        this selector is returned.
+        """
+        if self.type not in ("html", "xml"):
+            raise ValueError(
+                f"Cannot apply tree edits to a Selector of type {self.type!r}"
+            )
+        new_root = _apply_edits(self.root, edits, in_place=in_place)
+        if in_place:
+            return self
+        return self.__class__(
+            root=new_root,
+            _expr=self._expr,
+            namespaces=self.namespaces,
+            type=_xml_or_html(self.type),
+            huge_tree=self._huge_tree,
+        )
 
     @property
     def attrib(self) -> dict[str, str]:
