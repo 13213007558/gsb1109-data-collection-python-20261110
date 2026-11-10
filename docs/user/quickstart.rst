@@ -201,6 +201,32 @@ may better fit your use cases.
    were returned, use ``Response.raw``.
 
 
+Peeking at the Prefix
+~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes you need to inspect the first few bytes of a response -- for example
+to decide whether it is a login page -- before handing the whole body to a
+parser. With a streaming response, :meth:`Response.peek_prefix` returns up to
+the requested number of bytes without consuming them::
+
+    >>> r = requests.get(url, stream=True)
+    >>> head = r.peek_prefix(512)  # at most 512 decoded bytes are buffered
+    >>> body = r.content  # still contains every byte, including the prefix
+
+Peeked bytes are replayed by ``content``, ``iter_content`` and
+``iter_lines``, so each byte reaches the parser exactly once. Repeated calls
+only grow the buffer up to the largest requested size; they never restart the
+read. For compressed responses the limit applies to the *decoded* bytes, not
+to the compressed bytes on the wire. If you only needed the prefix, close the
+response (or use it as a context manager) to release the connection.
+
+Once you have peeked, keep consuming with ``content``, ``iter_content`` or
+``iter_lines``. Do not mix them with direct reads of ``raw``: the prefix has
+already been taken off the underlying stream and is held by the response, so
+``raw`` cannot replay it. Pick one consumption path so that no byte is lost or
+duplicated.
+
+
 .. _custom-headers:
 
 Custom Headers

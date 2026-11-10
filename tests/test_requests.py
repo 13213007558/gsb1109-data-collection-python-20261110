@@ -2,6 +2,8 @@
 
 import collections
 import contextlib
+import gzip
+import http.client
 import io
 import json
 import os
@@ -44,6 +46,7 @@ from requests.exceptions import (
     ReadTimeout,
     RequestException,
     RetryError,
+    StreamConsumedError,
     Timeout,
     TooManyRedirects,
     UnrewindableBodyError,
@@ -2326,6 +2329,273 @@ class TestRequests:
         assert r.history[1].status_code == 200
         assert not r.history[1].is_redirect
         assert r.url == urls_test[2]
+
+
+class _FakeSocket:
+    """Minimal socket that serves a fixed raw HTTP response from memory."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def makefile(self, *args, **kwargs):
+        return io.BytesIO(self._raw)
+
+    def settimeout(self, timeout):
+        pass
+
+    def gettimeout(self):
+        return None
+
+
+def _chunked_body(data, chunk_size):
+    encoded = b""
+    for start in range(0, len(data), chunk_size):
+        part = data[start : start + chunk_size]
+        encoded += f"{len(part):x}\r\n".encode("ascii") + part + b"\r\n"
+    return encoded + b"0\r\n\r\n"
+
+
+def _raw_http_response(payload, *, encoding=None, chunked=False, chunk_size=64):
+    """Build a real urllib3 response over an in-memory HTTP/1.1 message."""
+    if encoding == "gzip":
+        body = gzip.compress(payload)
+        header_lines = "Content-Encoding: gzip\r\n"
+    elif encoding is None:
+        body = payload
+        header_lines = ""
+    else:
+        raise ValueError(f"Unsupported encoding: {encoding!r}")
+
+    if chunked:
+        body = _chunked_body(body, chunk_size)
+        header_lines += "Transfer-Encoding: chunked\r\n"
+    else:
+        header_lines += f"Content-Length: {len(body)}\r\n"
+
+    raw_message = b"HTTP/1.1 200 OK\r\n" + header_lines.encode("ascii") + b"\r\n" + body
+    base = http.client.HTTPResponse(_FakeSocket(raw_message))
+    base.begin()
+    base._method = "GET"
+    return urllib3.HTTPResponse(
+        body=base,
+        headers=dict(base.msg),
+        status=base.status,
+        reason=base.reason,
+        preload_content=False,
+        decode_content=False,
+        original_response=base,
+        request_method="GET",
+    )
+
+
+def _streaming_response(payload, **kwargs):
+    response = requests.Response()
+    response.raw = _raw_http_response(payload, **kwargs)
+    response.status_code = 200
+    response.headers = CaseInsensitiveDict(dict(response.raw.headers))
+    return response
+
+
+class TestPeekPrefix:
+    @pytest.mark.parametrize("encoding", [None, "gzip"])
+    @pytest.mark.parametrize("chunked", [False, True])
+    @pytest.mark.parametrize("chunk_size", [1, 17, 100])
+    def test_peek_returns_decoded_prefix_without_consuming(
+        self, encoding, chunked, chunk_size
+    ):
+        payload = bytes(i % 256 for i in range(4096))
+        response = _streaming_response(
+            payload, encoding=encoding, chunked=chunked, chunk_size=chunk_size
+        )
+
+        head = response.peek_prefix(200)
+
+        assert head == payload[:200]
+        assert response._content_consumed is False
+        assert len(response._peeked_buffer) == 200
+
+    @pytest.mark.parametrize("encoding", [None, "gzip"])
+    @pytest.mark.parametrize("chunked", [False, True])
+    def test_content_is_complete_after_peek(self, encoding, chunked):
+        payload = b"0123456789abcdef" * 512
+        response = _streaming_response(payload, encoding=encoding, chunked=chunked)
+        response.peek_prefix(300)
+
+        assert response.content == payload
+        assert len(response.content) == len(payload)
+
+    @pytest.mark.parametrize("encoding", [None, "gzip"])
+    @pytest.mark.parametrize("chunked", [False, True])
+    @pytest.mark.parametrize("iter_chunk_size", [1, 16, 1024, None])
+    def test_iter_content_is_complete_after_peek(
+        self, encoding, chunked, iter_chunk_size
+    ):
+        payload = bytes((i * 7) % 256 for i in range(5000))
+        response = _streaming_response(payload, encoding=encoding, chunked=chunked)
+        head = response.peek_prefix(333)
+
+        chunks = list(response.iter_content(iter_chunk_size))
+
+        assert b"".join(chunks) == payload
+        # The peeked prefix is replayed rather than read a second time.
+        assert b"".join(chunks).startswith(head)
+
+    def test_iter_lines_is_complete_after_peek(self):
+        payload = b"line one\nline two\nline three\n"
+        response = _streaming_response(payload)
+        response.peek_prefix(9)
+
+        assert list(response.iter_lines()) == payload.splitlines()
+
+    @pytest.mark.parametrize(
+        "payload, kwargs",
+        [
+            (b"", {}),
+            (b"", {"encoding": "gzip"}),
+            (b"", {"chunked": True}),
+            (b"", {"encoding": "gzip", "chunked": True}),
+        ],
+    )
+    def test_empty_response_peek_and_consume(self, payload, kwargs):
+        response = _streaming_response(payload, **kwargs)
+
+        assert response.peek_prefix(128) == b""
+        assert response.content == b""
+        assert list(response.iter_content(64)) == []
+
+    def test_repeated_peek_extends_only_to_requested_limit(self):
+        payload = bytes(i % 256 for i in range(4096))
+        response = _streaming_response(payload)
+
+        assert response.peek_prefix(100) == payload[:100]
+        with mock.patch.object(
+            response.raw, "read", wraps=response.raw.read
+        ) as read_spy:
+            # A smaller peek must be served entirely from the buffer.
+            assert response.peek_prefix(50) == payload[:50]
+            assert read_spy.call_count == 0
+            # A larger peek extends the buffer, never restarting the read.
+            assert response.peek_prefix(200) == payload[:200]
+            assert read_spy.call_count >= 1
+
+        assert len(response._peeked_buffer) == 200
+        assert b"".join(response.iter_content(256)) == payload
+
+    def test_peek_limit_counts_decoded_bytes_not_wire_bytes(self):
+        # Highly compressible body: the gzip wire payload is far shorter than
+        # the decoded body, so mixing the two accounting schemes is detectable.
+        payload = b"abcdefgh" * 1000
+        wire = gzip.compress(payload)
+        assert len(wire) < 200 < len(payload)
+
+        response = _streaming_response(payload, encoding="gzip")
+        head = response.peek_prefix(200)
+
+        assert len(head) == 200
+        assert head == payload[:200]
+        # Gzip streams start with this magic number; decoded data must not.
+        assert not head.startswith(b"\x1f\x8b")
+        assert response.content == payload
+
+    def test_peek_on_file_like_raw_without_stream(self):
+        payload = bytes(i % 256 for i in range(2048))
+        response = requests.Response()
+        response.raw = io.BytesIO(payload)
+        response.status_code = 200
+
+        assert response.peek_prefix(64) == payload[:64]
+        assert b"".join(response.iter_content(128)) == payload
+
+    def test_peek_then_decode_unicode(self):
+        payload = "unicodé prefix and body\n".encode() * 50
+        response = _streaming_response(payload)
+        response.encoding = "utf-8"
+        response.peek_prefix(40)
+
+        decoded = "".join(response.iter_content(decode_unicode=True))
+
+        assert decoded == payload.decode("utf-8")
+
+    def test_raw_stream_position_advances_by_peek(self):
+        payload = bytes(i % 256 for i in range(512))
+        response = _streaming_response(payload)
+        response.peek_prefix(32)
+
+        # The prefix now lives in the response buffer, so the raw stream is
+        # positioned just after it and reads only the remainder.
+        assert response.raw.read(decode_content=True) == payload[32:]
+
+    def test_mixing_raw_reads_and_content_does_not_duplicate_bytes(self):
+        # Documents the supported consumption boundary: after a peek, raw and
+        # the high-level content API must not be interleaved. The high-level
+        # API replays only its own buffer; bytes taken directly from raw are
+        # neither duplicated nor re-fetched.
+        payload = bytes(i % 256 for i in range(512))
+        response = _streaming_response(payload)
+        head = response.peek_prefix(32)
+
+        via_raw = response.raw.read(decode_content=True)
+
+        # raw hands back everything after the buffered prefix.
+        assert via_raw == payload[32:]
+        # The response still owns exactly the prefix, once.
+        assert response._peeked_buffer == head
+        assert b"".join(response.iter_content(64)) == head
+
+    def test_peek_then_close_releases_connection(self):
+        payload = bytes(i % 256 for i in range(1024))
+        response = _streaming_response(payload)
+        response.peek_prefix(16)
+        assert response._content_consumed is False
+
+        with mock.patch.object(response.raw, "release_conn") as release_spy:
+            response.close()
+
+        release_spy.assert_called_once_with()
+        assert response.raw.closed
+
+    def test_peek_inside_context_manager_closes_connection(self):
+        payload = bytes(i % 256 for i in range(1024))
+        response = _streaming_response(payload, encoding="gzip")
+
+        with response as open_response:
+            assert open_response.peek_prefix(24) == payload[:24]
+
+        assert response.raw.closed
+
+    def test_peek_after_consumed_raises(self):
+        response = _streaming_response(b"x" * 64)
+        response.content
+
+        with pytest.raises(StreamConsumedError):
+            response.peek_prefix(8)
+
+    @pytest.mark.parametrize("bad_size", ["10", 1.5, None, True])
+    def test_peek_rejects_invalid_size_type(self, bad_size):
+        response = _streaming_response(b"x" * 64)
+
+        with pytest.raises(TypeError):
+            response.peek_prefix(bad_size)
+
+    def test_peek_rejects_negative_size(self):
+        response = _streaming_response(b"x" * 64)
+
+        with pytest.raises(ValueError):
+            response.peek_prefix(-1)
+
+    def test_peek_without_raw_returns_empty(self):
+        response = requests.Response()
+        response.status_code = 0
+
+        assert response.peek_prefix(16) == b""
+
+    def test_peek_zero_bytes_does_not_touch_stream(self):
+        response = _streaming_response(b"x" * 64)
+        with mock.patch.object(
+            response.raw, "read", wraps=response.raw.read
+        ) as read_spy:
+            assert response.peek_prefix(0) == b""
+            assert read_spy.call_count == 0
 
 
 class TestCaseInsensitiveDict:

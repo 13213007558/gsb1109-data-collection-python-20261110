@@ -737,6 +737,7 @@ class Response:
     _content: bytes | Literal[False] | None
     _content_consumed: bool
     _next: PreparedRequest | None
+    _peeked_buffer: bytes
     status_code: int
     headers: CaseInsensitiveDict[str]
     raw: Any
@@ -766,6 +767,7 @@ class Response:
         self._content = False
         self._content_consumed = False
         self._next = None
+        self._peeked_buffer = b""
 
         #: Integer Code of responded HTTP Status, e.g. 404 or 200.
         self.status_code = None  # type: ignore[assignment]
@@ -830,6 +832,7 @@ class Response:
         # pickled objects do not have .raw
         setattr(self, "_content_consumed", True)
         setattr(self, "raw", None)
+        setattr(self, "_peeked_buffer", b"")
 
     def __repr__(self) -> str:
         return f"<Response [{self.status_code}]>"
@@ -903,6 +906,70 @@ class Response:
             # to a standard Python utf-8 str.
             return "utf-8"
 
+    def peek_prefix(self, size: int) -> bytes:
+        """Return up to ``size`` bytes from the start of the response without
+        consuming them.
+
+        Peeked bytes are buffered and replayed by :meth:`iter_content`,
+        :attr:`content` and :meth:`iter_lines`, so a subsequent full read
+        contains every byte exactly once: nothing is lost and nothing is
+        returned twice. The buffered bytes are *decoded* bytes, meaning that
+        for a compressed response they are counted after decompression and
+        are never mixed with the compressed wire bytes.
+
+        Repeated calls only extend the buffer up to the largest requested
+        ``size``; a smaller call reuses the existing buffer instead of
+        reading again. At most ``size`` decoded bytes are buffered, and less
+        may be returned if the response ends early.
+
+        The body must not have been consumed yet, so this requires a
+        streaming response (``stream=True``) and cannot be combined with
+        :meth:`iter_content` or :attr:`content` on the same response.
+
+        After peeking, keep consuming through :meth:`iter_content`,
+        :meth:`iter_lines` or :attr:`content`. Do not interleave those with
+        direct reads of :attr:`raw`: the buffered prefix has already left the
+        underlying stream, so ``raw`` can neither replay it nor (for chunked
+        responses) resume a ``read``-based peek through ``raw.stream``.
+        Choosing a single consumption path keeps every byte accounted once.
+        """
+        if not isinstance(size, int) or isinstance(size, bool):
+            raise TypeError(f"size must be an int, it is instead a {type(size)}.")
+        if size < 0:
+            raise ValueError("size must be a non-negative integer.")
+        if self._content_consumed:
+            raise StreamConsumedError()
+        if size <= len(self._peeked_buffer) or self.raw is None:
+            return self._peeked_buffer[:size]
+
+        raw = self.raw
+        is_urllib3 = hasattr(raw, "stream")
+        try:
+            # ``read`` (rather than the ``stream`` generator) honors the bound
+            # on decoded bytes for chunked and compressed responses alike and
+            # stays reentrant, so compressed wire bytes and decoded bytes are
+            # never mixed and a later ``iter_content`` does not lose data.
+            while len(self._peeked_buffer) < size:
+                need = size - len(self._peeked_buffer)
+                if is_urllib3:
+                    chunk = raw.read(need, decode_content=True)
+                else:
+                    # Standard file-like object.
+                    chunk = raw.read(need)
+                if not chunk:
+                    break
+                self._peeked_buffer += chunk
+        except ProtocolError as e:
+            raise ChunkedEncodingError(e)
+        except DecodeError as e:
+            raise ContentDecodingError(e)
+        except ReadTimeoutError as e:
+            raise ConnectionError(e)
+        except SSLError as e:
+            raise RequestsSSLError(e)
+
+        return self._peeked_buffer
+
     @overload
     def iter_content(
         self, chunk_size: int | None = 1, decode_unicode: Literal[False] = False
@@ -933,10 +1000,32 @@ class Response:
         """
 
         def generate() -> Generator[bytes, None, None]:
+            # Replay bytes previously buffered by ``peek_prefix`` before any
+            # data is read from the underlying stream, so each byte is
+            # produced exactly once.
+            replaying_peek = bool(self._peeked_buffer)
+            if replaying_peek:
+                buffered = self._peeked_buffer
+                self._peeked_buffer = b""
+                if chunk_size is None:
+                    yield buffered
+                else:
+                    yield from iter_slices(buffered, chunk_size)
+
             # Special case for urllib3.
             if hasattr(self.raw, "stream"):
                 try:
-                    yield from self.raw.stream(chunk_size, decode_content=True)
+                    if replaying_peek:
+                        # A ``read``-based peek cannot be resumed through
+                        # ``stream`` for chunked responses, so drain the rest
+                        # with ``read`` to keep the chunk accounting correct.
+                        while True:
+                            chunk = self.raw.read(chunk_size, decode_content=True)
+                            if not chunk:
+                                break
+                            yield chunk
+                    else:
+                        yield from self.raw.stream(chunk_size, decode_content=True)
                 except ProtocolError as e:
                     raise ChunkedEncodingError(e)
                 except DecodeError as e:
