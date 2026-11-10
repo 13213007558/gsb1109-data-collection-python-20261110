@@ -676,3 +676,22 @@ class ItemLoader:
             )
             for jmes in jmess
         )
+
+
+from itemloaders.batch import (  # noqa: E402
+    BatchLoadError,
+    BatchRecord,
+    FieldError,
+    LoadResult,
+    load_items,
+)
+
+__all__ = [
+    "BatchLoadError",
+    "BatchRecord",
+    "FieldError",
+    "ItemLoader",
+    "LoadResult",
+    "load_items",
+    "unbound_method",
+]
