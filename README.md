@@ -73,6 +73,7 @@ allowlist sanitizer and an appropriate Content Security Policy.
 
 ## Change Log
 - 0.9
+  - Detects and merges parallel desktop/mobile article copies embedded in the same HTML: confirmed parallel representations are collapsed into one ordered body, variant-only paragraphs are kept in source-labelled wrappers, and unconfirmed overlaps are exposed through `Document.parallel_variant_report()` as candidates instead of being altered.
   - Expanded the declared Python range through 3.14, added `lxml` 6 support, and updated packaging metadata for Markdown documentation and current `cssselect` releases.
   - Added `python -m readability` execution for local files and URLs.
   - Fixed bytes input and encoding detection.

@@ -20,6 +20,7 @@ from .htmls import get_body
 from .htmls import get_title
 from .htmls import get_author
 from .htmls import shorten_title
+from .parallel import merge_parallel_variants
 from .debug import describe, text_content
 
 
@@ -174,6 +175,7 @@ class Document:
         self.retry_length = retry_length
         self.xpath = xpath
         self.handle_failures = handle_failures
+        self.parallel_variants = []
 
     def _html(self, force=False):
         if force or self.html is None:
@@ -242,6 +244,16 @@ class Document:
         """
         return clean_attributes(tounicode(self._html(), method="html"))
 
+    def parallel_variant_report(self):
+        """Report parallel article variants found during the last summary().
+
+        Each entry describes either a ``merged`` pair of confirmed desktop
+        and mobile representations, including the blocks unique to each
+        variant, or a ``candidate`` pair whose correspondence could not be
+        confirmed and which was left untouched.
+        """
+        return list(self.parallel_variants)
+
     def summary(self, html_partial=False, keep_all_images=False):
         """
         Given a HTML file, extracts the text of the article.
@@ -249,6 +261,10 @@ class Document:
         :param html_partial: return only the div of the document, don't wrap
                              in html and body tags.
         :param keep_all_images: Keep all images in summary.
+
+        Confirmed parallel desktop and mobile article copies are collapsed
+        before scoring; use parallel_variant_report() to inspect merges and
+        unconfirmed candidate pairs.
 
         Warning: It mutates internal DOM representation of the HTML document,
         so it is better to call other API methods before this one.
@@ -261,6 +277,7 @@ class Document:
                     i.drop_tree()
                 for i in self.tags(self.html, "body"):
                     i.set("id", "readabilityBody")
+                self.parallel_variants = merge_parallel_variants(self.html)
                 if ruthless:
                     self.remove_unlikely_candidates()
                 self.transform_misused_divs_into_paragraphs()
