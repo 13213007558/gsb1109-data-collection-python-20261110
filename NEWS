@@ -1,6 +1,14 @@
 Queuelib release notes
 ======================
 
+(unreleased)
+------------
+
+* Added ``MergingQueue``, which merges timestamped shard streams into one
+  globally ordered stream based on explicitly reported shard watermarks; late
+  data below the committed watermark is returned through a separate channel
+  instead of overtaking already emitted items
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

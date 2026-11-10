@@ -20,7 +20,8 @@ Queuelib is a Python library that implements object collections which are stored
 in memory or persisted to disk, provide a simple API, and run fast.
 
 Queuelib provides collections for queues_ (FIFO), stacks_ (LIFO), queues
-sorted by priority and queues that are emptied in a round-robin_ fashion.
+sorted by priority, queues that are emptied in a round-robin_ fashion, and
+streams from several shards merged into one globally ordered queue.
 
 .. note:: Queuelib collections are not thread-safe.
 
@@ -147,6 +148,52 @@ And use it::
     b'b'
     >>> rr.pop()
     b'd'
+
+MergingQueue
+============
+
+A :class:`~queuelib.MergingQueue` merges the ordered streams produced by
+several collection shards into one globally ordered stream. Each shard pushes
+items tagged with an observation timestamp and explicitly reports a watermark,
+meaning that it will not produce any older item. An item is only made
+available once every active shard has promised a watermark at least as high as
+the item's timestamp, so a shard with an empty buffer is never mistaken for a
+finished shard.
+
+Create the queue with the stable identifiers of its shards, push items and
+advance watermarks::
+
+    >>> from queuelib import MergingQueue
+    >>> mq = MergingQueue(("A", "B", "C"))
+    >>> mq.push("A", 1, "a1")
+    0
+    >>> mq.advance_watermark("A", 1)
+    >>> mq.advance_watermark("B", 1)
+    >>> mq.push("C", 1, "c1")
+    0
+    >>> mq.pop() is None  # shard C has not reported a watermark yet
+    True
+    >>> mq.advance_watermark("C", 1)
+    >>> mq.pop()
+    'a1'
+    >>> mq.pop()
+    'c1'
+
+Items sharing a timestamp are ordered first by the stable shard identifier and
+then by the per-shard sequence, which is assigned automatically starting at 0
+or can be given explicitly through the ``sequence`` argument of ``push()``.
+
+A shard leaves the merge with ``close_shard()`` and stops participating in the
+watermark barrier; it can rejoin later with ``reopen_shard()``, keeping its
+watermark and sequence counter. An item whose timestamp is lower than the
+highest timestamp already emitted is late: it never overtakes the output and
+is returned separately instead::
+
+    >>> mq.pop_late() is None
+    True
+
+``peek()`` inspects the next ordered item without consuming it, and
+``committed_watermark`` exposes the highest emitted timestamp.
 
 Clearing a queue
 ================
