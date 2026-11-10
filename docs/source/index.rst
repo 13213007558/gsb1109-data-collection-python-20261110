@@ -10,4 +10,5 @@ The Internet Archive maintains an official `“internetarchive” <https://archi
 
    installation
    usage
+   url-mapping
    release-history

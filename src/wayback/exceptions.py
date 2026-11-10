@@ -106,3 +106,11 @@ class SessionClosedError(Exception):
     Raised when a Wayback session is used to make a request after it has been
     closed and disabled.
     """
+
+
+class MappingConfigError(WaybackException):
+    """
+    Raised when an offline URL mapping configuration is invalid, such as a
+    rule missing required keys, a template referencing an unknown parameter,
+    or duplicate known mappings.
+    """

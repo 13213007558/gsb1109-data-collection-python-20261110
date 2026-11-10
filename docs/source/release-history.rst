@@ -5,6 +5,8 @@ Release History
 In Development
 --------------
 
+- Added offline URL mapping tools (:class:`wayback.UrlMappingConfig` and related classes) for deriving candidate new URLs from old index URLs after a site changes domains or directories. Researchers declare exact known pairs plus path rules and exceptions; one-to-many, many-to-one, and rule conflicts are preserved for human review instead of being merged, capture times and content summaries are treated as evidence only, and only confirmed, unambiguous mappings are exposed via :meth:`wayback.UrlMappingConfig.safe_targets` for downloads.
+
 - Added a “funding” link to the project’s PyPI listing. You can donate to EDGI’s work (including this project) at https://envirodatagov.org/donate/. (:issue:`222`)
 
 
