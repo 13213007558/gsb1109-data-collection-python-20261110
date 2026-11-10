@@ -64,6 +64,91 @@ from its test suite. The [quality evaluation](https://github.com/buriy/python-re
 includes the corpus, methodology, complete results, failures, and per-page
 measurements.
 
+## Stitching Paginated Articles
+
+Articles split across several pages usually repeat the end of the previous
+page at the top of the next one, so concatenating extracted pages duplicates
+paragraphs (and splits a paragraph when the page break lands mid-sentence).
+`readability.pagination.stitch_article()` accepts the pages *you already
+downloaded*, in the page order *you* give, and stitches them offline. It never
+opens a network connection.
+
+```python
+from readability.pagination import DownloadedPage, stitch_article
+
+# Downloaded earlier by the caller; stitch_article() only reads these strings.
+pages = [
+    DownloadedPage(1, html_page_1, url="https://example.test/story?page=1"),
+    DownloadedPage(2, html_page_2, url="https://example.test/story?page=2"),
+    DownloadedPage(3, html_page_3, url="https://example.test/story?page=3"),
+]
+article = stitch_article(pages)
+article.page_order          # (1, 2, 3) -- caller order is never reordered
+article.reading_order()     # [(source_page, paragraph_text), ...]
+article.merged_html         # one <div> with data-source-page on every paragraph
+article.boundaries          # one evidence record per adjacent page pair
+article.issues              # missing pages, conflicting titles, uncertain joins
+article.unresolved_positions()
+```
+
+Each retained paragraph keeps its source page in `ArticleSegment.source_page`
+(a tuple, e.g. `(1, 2)`, when a split paragraph was rebuilt from two pages).
+Only boundary repetitions backed by textual evidence are removed; identical
+quotations appearing inside the body stay untouched.
+
+**Whole-paragraph overlap.** When page 2 opens with page 1's closing
+paragraphs, the repeated copies are skipped and the boundary is recorded as
+`overlap`:
+
+```python
+# page 1 ends:  [P1, QUOTE, P2]
+# page 2 opens: [P2, P3]      page 3 opens: [P3, P4]
+article = stitch_article([page1, page2, page3])
+article.reading_order()
+# [(1, P1), (1, QUOTE), (1, P2), (2, P3), (3, P4)]
+[b["relation"] for b in article.boundaries]   # ['overlap', 'overlap']
+article.issues                                # []
+```
+
+The same quotation appearing in the middle of both pages is preserved twice,
+because it is not on a boundary.
+
+**Half-paragraph continuation.** When a paragraph is cut by the page break,
+the next page starts with the same opening fragment and then completes it. The
+fragments are merged into one paragraph attributed to both pages instead of
+producing a truncated duplicate:
+
+```python
+# page 1 ends with fragment P5[:52]; page 2 opens with the full P5, then P6
+article = stitch_article([page1, page2])
+article.boundaries[0]["relation"]             # 'continuation'
+article.paragraphs[1].text == P5              # True
+article.paragraphs[1].source_page             # (1, 2)
+article.reading_order()
+# [(1, P1), ((1, 2), P5), (2, P6)]
+```
+
+**Same text, different links.** Identical wording with different `href`
+targets cannot be proven to be a boundary repeat, so both paragraphs are kept
+and the join is reported as an unresolved position rather than guessed away:
+
+```python
+# page 1 ends:   <p><a href="/v1">Read the official registry entry…</a></p>
+# page 2 opens:  <p><a href="/v2">Read the official registry entry…</a></p>
+article = stitch_article([page1, page2])
+article.boundaries[0]["relation"]             # 'uncertain'
+article.unresolved_positions()
+# [{'position': 2, 'between': (1, 2),
+#   'reason': 'identical paragraph text points to different link targets;
+#              it cannot be proven to be a boundary repeat'}]
+article.plain_text().count("Read the official registry entry")   # 2
+```
+
+Gaps in an integer page sequence produce a `missing_page` issue, pages whose
+titles disagree produce a `conflicting_title` issue, and any boundary without
+overlap or continuation evidence produces an `uncertain_join` issue. In every
+unresolved case the full text of both pages is retained.
+
 ## Security
 
 `Document.summary()` removes common active content while extracting an article,
@@ -84,6 +169,7 @@ allowlist sanitizer and an appropriate Content Security Policy.
   - Preserved content containers whose class or ID also contains an unlikely-candidate term such as `sidebar`.
   - Preserved code blocks and semantic `<main>` or `<article>` containers during unlikely-candidate filtering.
   - Recovered editorial leads, heading preambles, split article segments, and substantial list-based articles.
+  - Added offline `readability.pagination.stitch_article()` for caller-ordered downloaded pages: removes evidence-backed boundary paragraph overlaps, merges paragraphs split across page breaks, preserves mid-body repeated quotations, keeps provenance per paragraph, and reports missing pages, conflicting titles, and uncertain joins (including same text with different link targets) without any network requests.
   - Removed trailing linked calls to action without weakening general link-density filtering.
   - Restricted retained video iframes to exact HTTP(S) YouTube and Vimeo hosts, preventing lookalike-host and userinfo URL bypasses, and removed active `srcdoc` content.
   - Added 181 reproducible fixtures: 166 quality fixtures split into base, Dragnet, GitHub user-issue, and complete 130-page Mozilla Readability corpora, plus 15 manually curated real-page regression fixtures from `jcharum/lxml-readability`.
