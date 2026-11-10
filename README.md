@@ -49,6 +49,79 @@ The command-line interface accepts a local HTML file or a URL:
 python -m readability -u https://example.com
 ```
 
+## Same-site template profiles
+
+Some sites render a large "related recommendations" panel on every article.
+When each card carries a long non-link teaser, the link-density heuristics
+cannot distinguish the panel from article text, so it leaks into the
+extraction. An optional site profile learns these templates from a few
+reference pages of the **same site** and then applies them to new pages.
+
+```python
+from readability import Document
+from readability.siteprofile import SiteProfile
+
+references = [open(path).read() for path in reference_paths]
+profile = SiteProfile.train(references, domain="example.com")
+profile.save("example-com.profile.json")
+
+profile = SiteProfile.load("example-com.profile.json")
+doc = Document(html, url="https://example.com/articles/42", site_profile=profile)
+print(doc.summary())
+print(doc.removed_profile_blocks)
+```
+
+### What is allowed to become a rule
+
+Repetition alone never qualifies a block. A signature (tag, id, full class
+set, ARIA role) is learned only when every occurrence independently looks
+like navigation:
+
+- link-dominated text (anchor share above the configured density thresholds);
+- a repeated list of link cards (e.g. recommendation grids);
+- navigation vocabulary such as "related", "recommended" or "read next"
+  combined with link-heavy wording.
+
+Rules also require an identifiable signature (an id or at least one class),
+must appear on at least two reference pages, and never target `article`,
+`main`, or content-named containers. Before a matched block is removed from
+a target page, the same evidence is re-checked on that page, so a template
+signature repurposed for prose is kept.
+
+### What is deliberately never removed
+
+- A syndicated article intro or disclaimer repeated verbatim across pages:
+  it is prose, not a link block, so it produces no rule even though it
+  appears many times.
+- A legitimate column or section description: without navigation evidence it
+  is retained regardless of frequency.
+- Generic classless containers, which cannot be tied to a specific template.
+
+Reference pages are parsed into private copies and profiles are immutable
+data, so training material and extracted pages never mutate each other.
+
+### Scope and cross-site use
+
+Every trained profile records its domain and the evidence behind its rules;
+inspect it with `profile.scope` and `profile.describe()`. Applying a profile
+to a URL outside that domain raises `CrossSiteProfileError` unless the caller
+passes `allow_cross_site_profile=True` (or `--allow-cross-site-profile` on
+the CLI), making cross-site reuse an explicit, auditable choice. A profile
+without a recorded domain cannot be applied to pages at all, because its
+scope would be unknown.
+
+The CLI can train, save and apply profiles without writing extraction glue
+code:
+
+```bash
+python -m readability --train-profile example.com \
+    -r ref1.html -r ref2.html -r ref3.html --save-profile profile.json
+python -m readability --load-profile profile.json \
+    --page-url https://example.com/articles/42 article42.html
+```
+
+## Benchmark
+
 Run the real-page extraction benchmark with the default minimum F1 of 0.95:
 
 ```bash
@@ -72,6 +145,10 @@ sanitizer. Applications that render untrusted output must apply a dedicated
 allowlist sanitizer and an appropriate Content Security Policy.
 
 ## Change Log
+- Unreleased
+  - Added optional same-site template profiles (`readability.siteprofile.SiteProfile`): train on reference pages to remove evidence-backed shared navigation such as "related recommendations" panels, with target-page re-validation so repeated article intros and legitimate column descriptions are never deleted merely for recurring across pages.
+  - Added `Document(..., site_profile=..., allow_cross_site_profile=...)` with domain scoping, `CrossSiteProfileError` and `ProfileScopeError`, plus JSON save/load and `scope`/`describe()` inspection of where a profile may be used.
+  - Added CLI `--train-profile`, `--reference`, `--save-profile`, `--load-profile`, `--page-url` and `--allow-cross-site-profile` options.
 - 0.9
   - Expanded the declared Python range through 3.14, added `lxml` 6 support, and updated packaging metadata for Markdown documentation and current `cssselect` releases.
   - Added `python -m readability` execution for local files and URLs.

@@ -21,6 +21,15 @@ from .htmls import get_title
 from .htmls import get_author
 from .htmls import shorten_title
 from .debug import describe, text_content
+from .siteprofile import SiteProfile
+
+
+class CrossSiteProfileError(ValueError):
+    """A site profile is applied outside the domain it was trained on."""
+
+
+class ProfileScopeError(ValueError):
+    """A profile without a usable scope cannot be matched to a page URL."""
 
 
 log = logging.getLogger("readability.readability")
@@ -135,6 +144,8 @@ class Document:
         retry_length=250,
         xpath=False,
         handle_failures="discard",
+        site_profile=None,
+        allow_cross_site_profile=False,
     ):
         """Generate the document
 
@@ -148,6 +159,13 @@ class Document:
         reconstruct selected summary in original document).
         :param handle_failures: Parameter passed to `lxml` for handling failure during exception.
         Support options = ["discard", "ignore", None]
+        :param site_profile: optional :class:`SiteProfile` learned from other
+        pages of the same site. Only blocks matching its learned signatures
+        and still looking like link-dominated navigation on this page are
+        removed; repeated prose is never touched by the profile.
+        :param allow_cross_site_profile: explicitly permit applying a profile
+        whose trained domain does not match ``url``. Cross-site use is
+        rejected by default.
 
         Examples:
             positive_keywords=["news-item", "block"]
@@ -174,6 +192,95 @@ class Document:
         self.retry_length = retry_length
         self.xpath = xpath
         self.handle_failures = handle_failures
+        self.site_profile = self._validate_site_profile(
+            site_profile, url, allow_cross_site_profile
+        )
+        self.removed_profile_blocks = []
+
+    @staticmethod
+    def _validate_site_profile(site_profile, url, allow_cross_site):
+        if site_profile is None:
+            return None
+        if not isinstance(site_profile, SiteProfile):
+            raise TypeError(
+                "site_profile must be a readability.siteprofile.SiteProfile "
+                "instance, got {}".format(type(site_profile).__name__)
+            )
+        if not site_profile.rules:
+            log.info("Empty site profile supplied; nothing will be removed.")
+            return site_profile
+        if not site_profile.domain:
+            raise ProfileScopeError(
+                "The site profile has no trained domain; train it again with "
+                "domain=... before applying it to a page."
+            )
+        if url is None:
+            raise ProfileScopeError(
+                "A scoped site profile requires the page url to verify that "
+                "it belongs to {!r}; pass url=... or train a domain-less "
+                "profile only for deliberately unscoped use.".format(
+                    site_profile.domain
+                )
+            )
+        if not allow_cross_site and not site_profile.describes(url):
+            raise CrossSiteProfileError(
+                "Site profile trained for {!r} does not cover {!r}. Pass "
+                "allow_cross_site_profile=True only after explicitly "
+                "confirming the template applies to this site.".format(
+                    site_profile.domain, url
+                )
+            )
+        return site_profile
+
+    def apply_site_profile(self, doc):
+        """Drop profile-matched blocks that remain navigation on this page.
+
+        Every match is re-validated against the target document: a learned
+        signature alone is not enough, the block must independently show
+        navigation evidence (link-dominated text, repeated link items or
+        navigation vocabulary with link-heavy wording). Blocks holding
+        article text therefore survive even when their markup coincides
+        with a training template.
+        """
+        if self.site_profile is None or not self.site_profile.rules:
+            return
+        self.removed_profile_blocks = []
+        rules = self.site_profile.rules
+        for elem in doc.findall(".//*"):
+            if not isinstance(elem.tag, str):
+                continue
+            if elem.getparent() is None:
+                continue
+            rule = next(
+                (
+                    candidate
+                    for candidate in rules
+                    if self.site_profile.signature_matches(elem, candidate)
+                ),
+                None,
+            )
+            if rule is None:
+                continue
+            if not self.site_profile.is_evidence_sufficient(elem):
+                log.info(
+                    "Keeping block matching profile rule %s: target-page "
+                    "evidence is insufficient (prose or legitimate section).",
+                    rule["tag"],
+                )
+                continue
+            log.debug(
+                "Removing site-profile template block - %s", describe(elem)
+            )
+            self.removed_profile_blocks.append(
+                {
+                    "tag": elem.tag,
+                    "id": elem.get("id"),
+                    "class": elem.get("class"),
+                    "role": elem.get("role"),
+                    "text": text_content(elem)[:200],
+                }
+            )
+            elem.drop_tree()
 
     def _html(self, force=False):
         if force or self.html is None:
@@ -196,6 +303,7 @@ class Document:
         for elem in doc.xpath("//*[@style]"):
             if REGEXES["displayNoneRe"].search(elem.get("style")):
                 elem.drop_tree()
+        self.apply_site_profile(doc)
         doc = html_cleaner.clean_html(doc)
         base_href = self.url
         if base_href:
@@ -1122,6 +1230,46 @@ def main():
         help="negative keywords (comma-separated)",
         action="store",
     )
+    parser.add_option(
+        "-r",
+        "--reference",
+        default=[],
+        action="append",
+        help="reference HTML file from the same site used to train a "
+        "template profile (repeat for several pages)",
+    )
+    parser.add_option(
+        "--train-profile",
+        default=None,
+        metavar="DOMAIN",
+        help="train a same-site template profile for DOMAIN from the "
+        "--reference pages instead of extracting an article",
+    )
+    parser.add_option(
+        "--save-profile",
+        default=None,
+        metavar="PATH",
+        help="write the trained profile to PATH as JSON",
+    )
+    parser.add_option(
+        "--load-profile",
+        default=None,
+        metavar="PATH",
+        help="apply a previously saved template profile to the target page",
+    )
+    parser.add_option(
+        "--allow-cross-site-profile",
+        default=False,
+        action="store_true",
+        help="explicitly permit applying a profile outside its trained domain",
+    )
+    parser.add_option(
+        "--page-url",
+        default=None,
+        metavar="URL",
+        help="declare the origin URL of a local file without fetching it; "
+        "used to verify same-site profile scope",
+    )
     (options, args) = parser.parse_args()
 
     if options.verbose:
@@ -1131,9 +1279,49 @@ def main():
             format="%(asctime)s: %(levelname)s: %(message)s (at %(filename)s: %(lineno)d)",
         )
 
+    if options.train_profile:
+        from .siteprofile import SiteProfile
+
+        if not options.reference:
+            parser.error("--train-profile requires at least one --reference page")
+        pages = []
+        for reference in options.reference:
+            with open(reference, encoding="utf-8") as reference_file:
+                pages.append(reference_file.read())
+        profile = SiteProfile.train(pages, domain=options.train_profile)
+        if options.save_profile:
+            profile.save(options.save_profile)
+        print(
+            "Trained profile for {!r} from {} page(s): {} evidence-backed "
+            "navigation rule(s).".format(
+                profile.domain, profile.source_page_count, len(profile.rules)
+            )
+        )
+        for rule in profile.rules:
+            print(
+                "  - <{} id={!r} class={!r} role={!r}> seen on {}/{} pages".format(
+                    rule["tag"],
+                    rule["id"],
+                    " ".join(rule["class"]),
+                    rule["role"],
+                    rule["page_count"],
+                    profile.source_page_count,
+                )
+            )
+        if not (len(args) == 1 or options.url):
+            return
+
     if not (len(args) == 1 or options.url):
         parser.print_help()
         sys.exit(1)
+
+    site_profile = None
+    if options.load_profile:
+        from .siteprofile import SiteProfile
+
+        site_profile = SiteProfile.load(options.load_profile)
+    elif options.train_profile:
+        site_profile = profile
 
     file = None
     if options.url:
@@ -1145,9 +1333,11 @@ def main():
     try:
         doc = Document(
             file.read(),
-            url=options.url,
+            url=options.url or options.page_url,
             positive_keywords=options.positive_keywords,
             negative_keywords=options.negative_keywords,
+            site_profile=site_profile,
+            allow_cross_site_profile=options.allow_cross_site_profile,
         )
         if options.browser:
             from .browser import open_in_browser
