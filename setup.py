@@ -1,0 +1,78 @@
+#!/usr/bin/env python
+# vim: set sw=4 et:
+
+from setuptools import setup, find_packages
+
+__version__ = '1.8.2'
+
+
+setup(
+    name='warcio',
+    version=__version__,
+    author='Ilya Kreymer',
+    author_email='ikreymer@gmail.com',
+    license='Apache 2.0',
+    packages=find_packages(exclude=['test']),
+    url='https://github.com/webrecorder/warcio',
+    description='Streaming WARC (and ARC) IO library',
+    long_description=open('README.rst').read(),
+    provides=[
+        'warcio',
+        ],
+    install_requires=[
+        'six',
+        ],
+    zip_safe=True,
+    entry_points="""
+        [console_scripts]
+        warcio = warcio.cli:main
+    """,
+    test_suite='',
+    extras_require={
+        'testing': [
+            'urllib3>=1.26.5,<1.26.16',
+            'pytest',
+            'pytest-cov',
+            'httpbin>=0.10.2',
+            'requests',
+            'wsgiprox',
+            'hookdns',
+            # fsspec testing
+            'warcio[s3]',  # note: drags in fsspec
+            'moto[s3]>=4',
+            's3fs',  # needs to be explicit, to avoid async, which conflicts with moto
+            'flask',
+            'flask_cors',
+            'botocore',
+            # certauth uses X509.add_extensions(), which was removed in pyOpenSSL 26.2.
+            'pyOpenSSL<26.2',
+        ],
+        'all': [
+            'brotlicffi>=1.2.1.0', # older versions are vulnerable to CVE-2026-111497
+            'warcio[s3]',
+        ],
+        's3': [
+            'fsspec',
+            's3fs',
+            'aiohttp',
+            'requests',
+        ]
+    },
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Environment :: Web Environment',
+        'License :: OSI Approved :: Apache Software License',
+        'Programming Language :: Python :: 3',
+        #'Programming Language :: Python :: 3.7',  # no longer in github actions
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.13',
+        'Programming Language :: Python :: 3.14',
+        'Programming Language :: Python :: 3.15',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+        'Topic :: Utilities',
+    ]
+)
