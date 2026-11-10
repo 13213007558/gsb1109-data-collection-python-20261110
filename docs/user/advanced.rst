@@ -573,6 +573,49 @@ to provide a fallback encoding in the event the server doesn't provide one::
         for line in lines:
             print(line)
 
+.. _multipart-responses:
+
+Multipart Responses
+-------------------
+
+Some APIs pack many small documents into a single ``multipart/mixed``
+response. With :meth:`Response.iter_parts() <requests.Response.iter_parts>`
+you can iterate over the parts one at a time, without loading the whole
+response into memory. Simply set ``stream`` to ``True`` and iterate::
+
+    r = requests.get('https://example.org/batch', stream=True)
+
+    for part in r.iter_parts():
+        print(part.headers['Content-Type'])
+        document = part.read()  # or stream it with part.iter_chunks()
+
+Each part carries its own headers (duplicates are preserved in
+``part.raw_headers``) and its own charset (``part.text`` decodes with it).
+Parts you are not interested in are skipped automatically when the
+iteration advances, so the next part is always parsed from the correct
+position.
+
+The stream is bounded and validated: a part's header block may not exceed
+``max_header_size`` (64 KiB by default), boundary-like text inside a part
+body is never mistaken for a delimiter, and a stream that ends before its
+closing boundary raises
+:class:`MultipartTruncatedError <requests.exceptions.MultipartTruncatedError>`
+instead of being silently accepted as complete.
+
+Exhausting the reader releases the underlying connection; to stop early,
+close it explicitly (it is also a context manager)::
+
+    with r.iter_parts() as parts:
+        first = next(parts)
+
+Nested multipart bodies are not decoded by default. If the API documents
+a nesting level, declare it with ``max_depth`` and iterate the sub-parts::
+
+    for part in r.iter_parts(max_depth=2):
+        if part.headers.get('Content-Type', '').startswith('multipart/'):
+            for sub_part in part.iter_parts():
+                ...
+
 .. _proxies:
 
 Proxies

@@ -62,14 +62,17 @@ from .exceptions import (
     InvalidJSONError,
     InvalidURL,
     MissingSchema,
+    MultipartError,
     StreamConsumedError,
 )
 from .exceptions import JSONDecodeError as RequestsJSONDecodeError
 from .exceptions import SSLError as RequestsSSLError
 from .hooks import default_hooks
+from .multipart import DEFAULT_MAX_HEADER_SIZE, MultipartReader
 from .status_codes import codes
 from .structures import CaseInsensitiveDict
 from .utils import (
+    _parse_content_type_header,
     check_header_validity,
     get_auth_from_url,
     guess_filename,
@@ -1030,6 +1033,50 @@ class Response:
 
         if pending is not None:
             yield pending
+
+    def iter_parts(
+        self,
+        chunk_size: int = ITER_CHUNK_SIZE,
+        *,
+        max_header_size: int = DEFAULT_MAX_HEADER_SIZE,
+        max_depth: int = 1,
+    ) -> MultipartReader:
+        """Iterates over the parts of a ``multipart/*`` response body, one
+        part at a time. When stream=True is set on the request, this avoids
+        reading the content at once into memory for large responses.
+
+        Each yielded part streams its own body, so parts not of interest
+        can be skipped without buffering them. Exhausting or closing the
+        returned reader releases the underlying connection.
+
+        :param chunk_size: number of bytes to read into memory at a time.
+        :param max_header_size: maximum allowed size of a part's header
+            block, in bytes.
+        :param max_depth: how many multipart nesting levels may be parsed;
+            deeper multipart bodies are exposed as opaque part content.
+        """
+        content_type = self.headers.get("content-type", "")
+        media_type, params = _parse_content_type_header(content_type)
+        if not media_type.lower().startswith("multipart/"):
+            raise MultipartError(
+                f"response is not multipart (Content-Type: {content_type!r})"
+            )
+        boundary = params.get("boundary")
+        if boundary is None:
+            raise MultipartError("multipart response is missing a boundary parameter")
+
+        def generate() -> Generator[bytes, None, None]:
+            try:
+                yield from self.iter_content(chunk_size)
+            finally:
+                self.close()
+
+        return MultipartReader(
+            generate(),
+            boundary,
+            max_header_size=max_header_size,
+            max_depth=max_depth,
+        )
 
     @property
     def content(self) -> bytes:

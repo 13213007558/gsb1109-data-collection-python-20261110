@@ -139,6 +139,14 @@ class StreamConsumedError(RequestException, TypeError):
     """The content for this response was already consumed."""
 
 
+class MultipartError(RequestException):
+    """A multipart response body could not be decoded."""
+
+
+class MultipartTruncatedError(MultipartError):
+    """The multipart stream ended before its closing boundary arrived."""
+
+
 class RetryError(RequestException):
     """Custom retries logic failed"""
 

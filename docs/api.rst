@@ -36,6 +36,8 @@ Exceptions
 .. autoexception:: requests.ReadTimeout
 .. autoexception:: requests.Timeout
 .. autoexception:: requests.JSONDecodeError
+.. autoexception:: requests.MultipartError
+.. autoexception:: requests.MultipartTruncatedError
 
 
 Request Sessions
