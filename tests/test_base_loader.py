@@ -99,7 +99,7 @@ class TestItemLoaderBasic:
         assert il.load_item() == {"img_url": "1234.png"}
 
     def test_add_value(self):
-        il = CustomItemLoader()
+        il = CustomItemLoader(group_conflict_policy="merge")
         il.add_value("name", "marta")
         assert il.get_collected_values("name") == ["Marta"]
         assert il.get_output_value("name") == ["Marta"]
@@ -131,7 +131,7 @@ class TestItemLoaderBasic:
         assert il.get_collected_values("name") == []
 
     def test_replace_value(self):
-        il = CustomItemLoader()
+        il = CustomItemLoader(group_conflict_policy="merge")
         il.replace_value("name", "marta")
         assert il.get_collected_values("name") == ["Marta"]
         assert il.get_output_value("name") == ["Marta"]

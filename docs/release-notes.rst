@@ -5,6 +5,27 @@
 Release notes
 =============
 
+.. _release-1.6.0:
+
+itemloaders 1.6.0 (unreleased)
+------------------------------
+
+-   Added :ref:`field groups <field-groups>` to keep related fields aligned.
+    Passing field-group records (mappings, or an iterable of mappings) to
+    :meth:`~ItemLoader.add_value` with a ``None`` field name now cleans and
+    filters each record as a unit, so dropping one field's value no longer
+    shifts the other fields out of sync. Missing fields stay missing within
+    their record instead of being backfilled from another row, and one-to-many
+    transforms keep their values attached to the same record. See
+    :meth:`~ItemLoader.get_collected_group_records` to inspect the records.
+
+-   Added the ``group_conflict_policy`` :class:`~ItemLoader` parameter and
+    :attr:`~ItemLoader.group_conflict_policy` class attribute, together with
+    the :class:`FieldGroupConflictError` exception. It controls what happens
+    when a field is written both through a field group and through the
+    single-field API: ``"reject"`` (the default) raises, while ``"merge"``
+    combines both sources in write order.
+
 .. _release-1.5.0:
 
 itemloaders 1.5.0 (2026-09-29)

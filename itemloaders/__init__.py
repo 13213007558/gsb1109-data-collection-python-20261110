@@ -6,8 +6,9 @@ See documentation in :ref:`declaring-loaders`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 from itemadapter import ItemAdapter
 from parsel import Selector  # noqa: TC002  # for sphinx
@@ -21,9 +22,28 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, MutableMapping
     from re import Pattern
 
+    #: One entry of the field write history. A ``"single"`` event holds the
+    #: values collected for one field through the single-field API, while a
+    #: ``"group"`` event holds one intact field-group record.
+    _Event = (
+        tuple[Literal["single"], str, list[Any]]
+        | tuple[Literal["group"], dict[str, list[Any]]]
+    )
+
 
 class _StatsCollector(Protocol):
     def inc_value(self, key: str, count: int = 1) -> None: ...
+
+
+class FieldGroupConflictError(ValueError):
+    """Raised when a field is written both as part of a field group and through
+    the single-field API, and the loader is configured to reject that mix.
+
+    See :attr:`ItemLoader.group_conflict_policy` for the available policies.
+    """
+
+
+_GROUP_CONFLICT_POLICIES: frozenset[str] = frozenset({"reject", "merge"})
 
 
 def unbound_method(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -56,6 +76,13 @@ class ItemLoader:
         :meth:`add_xpath` (resp. :meth:`add_css`, :meth:`add_jmes`) or :meth:`replace_xpath`
         (resp. :meth:`replace_css`, :meth:`replace_jmes`) method.
     :type selector: :class:`~parsel.selector.Selector` object
+
+    :param group_conflict_policy: What to do when a field is written both
+        through a :ref:`field group <field-groups>` and through the
+        single-field API. ``"reject"`` (the default) raises
+        :class:`FieldGroupConflictError`, ``"merge"`` keeps both sources in
+        write order.
+    :type group_conflict_policy: str
 
     The item, selector and the remaining keyword arguments are
     assigned to the Loader context (accessible through the :attr:`context` attribute).
@@ -119,18 +146,44 @@ class ItemLoader:
     default_input_processor: Callable[..., Any] = Identity()
     default_output_processor: Callable[..., Any] = Identity()
 
+    #: Policy applied when a field receives data both through a field group
+    #: (``add_value(None, ...)`` with mapping values) and through the
+    #: single-field API (``add_value("field", ...)``).
+    #:
+    #: ``"reject"`` (the default) raises :class:`FieldGroupConflictError`.
+    #: ``"merge"`` keeps every source and interleaves their values in write
+    #: order: the grouped fields are built from the grouped records, while the
+    #: values collected outside of a group are inserted at the position where
+    #: they were added.
+    group_conflict_policy: str = "reject"
+
     def __init__(
         self,
         item: Any = None,
         selector: Selector | None = None,
         parent: ItemLoader | None = None,
         stats: _StatsCollector | None = None,
+        group_conflict_policy: str | None = None,
         **context: Any,
     ):
         self.selector: Selector | None = selector
         self.stats: _StatsCollector | None = (
             stats if stats is not None or parent is None else parent.stats
         )
+        if group_conflict_policy is None:
+            group_conflict_policy = (
+                parent.group_conflict_policy
+                if parent is not None
+                else self.group_conflict_policy
+            )
+        if group_conflict_policy not in _GROUP_CONFLICT_POLICIES:
+            policies = ", ".join(sorted(_GROUP_CONFLICT_POLICIES))
+            msg = (
+                f"Invalid group_conflict_policy {group_conflict_policy!r},"
+                f" expected one of: {policies}"
+            )
+            raise ValueError(msg)
+        self.group_conflict_policy = group_conflict_policy
         context.update(selector=selector)
         # An item built here has no data, only the field defaults of its class,
         # which must not be mistaken for loaded values.
@@ -142,16 +195,48 @@ class ItemLoader:
         self.context: MutableMapping[str, Any] = context
         self.parent: ItemLoader | None = parent
         self._local_values: dict[str, list[Any]] = {}
+        #: Field-group records collected with ``add_value(None, ...)``.
+        #: Each record is a mapping kept as an atomic unit, so the relationship
+        #: between the values of its fields cannot get out of sync.
+        self._local_groups: list[dict[str, list[Any]]] = []
+        #: Fields that belong to at least one collected field-group record.
+        self._local_group_fields: set[str] = set()
+        #: Write history, used to preserve the write order when the
+        #: ``"merge"`` conflict policy combines grouped and ungrouped sources.
+        #: Each item is either ``("single", field_name, values)`` or
+        #: ``("group", record)``, with the same record object also held in
+        #: :attr:`_local_groups`, so later field removals stay in sync.
+        self._local_events: list[_Event] = []
         if has_initial_values:
             for field_name, value in ItemAdapter(item).items():
+                values = list(arg_to_iter(value))
                 self._values.setdefault(field_name, [])
-                self._values[field_name] += arg_to_iter(value)
+                self._values[field_name] += values
+                self._events.append(("single", field_name, values))
 
     @property
     def _values(self) -> dict[str, list[Any]]:
         if self.parent is not None:
             return self.parent._values
         return self._local_values
+
+    @property
+    def _groups(self) -> list[dict[str, list[Any]]]:
+        if self.parent is not None:
+            return self.parent._groups
+        return self._local_groups
+
+    @property
+    def _group_fields(self) -> set[str]:
+        if self.parent is not None:
+            return self.parent._group_fields
+        return self._local_group_fields
+
+    @property
+    def _events(self) -> list[_Event]:
+        if self.parent is not None:
+            return self.parent._events
+        return self._local_events
 
     @property
     def item(self) -> Any:
@@ -211,9 +296,14 @@ class ItemLoader:
         appended to the data collected for that field. If the field already
         contains collected data, the new data is added.
 
-        The given ``field_name`` can be ``None``, in which case values for
-        multiple fields may be added. And the processed value should be a dict
-        with field_name mapped to values.
+        The given ``field_name`` can be ``None``, in which case the value is
+        treated as one or more :ref:`field groups <field-groups>`. A field group
+        is a mapping of field names to values that describes a single record
+        (for example one product variant with its color and stock). Each record
+        is cleaned and filtered as a unit through the input processors of its
+        fields, so values belonging to the same record can never get out of
+        sync when one of them is dropped. A single mapping is also accepted and
+        treated as a one-record group.
 
         :returns: The current ItemLoader instance for method chaining.
         :rtype: ItemLoader
@@ -225,14 +315,20 @@ class ItemLoader:
             loader.add_value('length', '100')
             loader.add_value('name', 'name: foo', TakeFirst(), re='name: (.+)')
             loader.add_value(None, {'name': 'foo', 'sex': 'male'})
+            loader.add_value(
+                None,
+                [
+                    {'color': 'red', 'stock': 3},
+                    {'color': 'blue', 'stock': None},
+                ],
+            )
 
         """
         value = self.get_value(value, *processors, re=re, **kw)
         if value is None:
             return self
         if not field_name:
-            for k, v in value.items():
-                self._add_value(k, v)
+            self._add_groups(value)
         else:
             self._add_value(field_name, value)
         return self
@@ -249,6 +345,13 @@ class ItemLoader:
         Similar to :meth:`add_value` but replaces the collected data with the
         new value instead of adding it.
 
+        When ``field_name`` is ``None``, every piece of collected data for the
+        fields of the new field-group records is replaced: the matching fields
+        are removed from the previously collected records (records made of only
+        replaced fields disappear) and any single-field values for those fields
+        are dropped too. Fields that are not part of any of the new records are
+        left untouched.
+
         :returns: The current ItemLoader instance for method chaining.
         :rtype: ItemLoader
         """
@@ -256,22 +359,133 @@ class ItemLoader:
         if value is None:
             return self
         if not field_name:
-            for k, v in value.items():
-                self._replace_value(k, v)
+            self._replace_groups(value)
         else:
             self._replace_value(field_name, value)
         return self
 
     def _add_value(self, field_name: str, value: Any) -> None:
+        self._check_single_field_conflict(field_name)
         value = arg_to_iter(value)
         processed_value = self._process_input_value(field_name, value)
-        if processed_value:
+        processed_values = list(arg_to_iter(processed_value))
+        if processed_values:
             self._values.setdefault(field_name, [])
-            self._values[field_name] += arg_to_iter(processed_value)
+            self._values[field_name] += processed_values
+            self._events.append(("single", field_name, processed_values))
 
     def _replace_value(self, field_name: str, value: Any) -> None:
+        self._check_single_field_conflict(field_name)
+        self._remove_single_events(field_name)
         self._values.pop(field_name, None)
         self._add_value(field_name, value)
+
+    def _add_groups(self, value: Any) -> None:
+        records = self._as_group_records(value)
+        field_names = self._group_field_names(records)
+        self._check_group_write_conflict(field_names)
+        for record in records:
+            cleaned = self._clean_group_record(record)
+            if cleaned:
+                self._groups.append(cleaned)
+                self._group_fields.update(cleaned)
+                self._events.append(("group", cleaned))
+
+    def _replace_groups(self, value: Any) -> None:
+        records = self._as_group_records(value)
+        field_names = self._group_field_names(records)
+        self._check_group_write_conflict(field_names)
+        self._drop_groups_for_fields(field_names)
+        for record in records:
+            cleaned = self._clean_group_record(record)
+            if cleaned:
+                self._groups.append(cleaned)
+                self._group_fields.update(cleaned)
+                self._events.append(("group", cleaned))
+
+    @staticmethod
+    def _as_group_records(value: Any) -> list[Mapping[str, Any]]:
+        if isinstance(value, Mapping):
+            return [value]
+        records = list(arg_to_iter(value))
+        for record in records:
+            if not isinstance(record, Mapping):
+                msg = (
+                    "Field-group values must be mappings of field names to"
+                    f" values, or an iterable of such mappings; got {type(value).__name__}"
+                )
+                raise TypeError(msg)
+        return records
+
+    @staticmethod
+    def _group_field_names(records: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for record in records:
+            for name in record:
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        return tuple(names)
+
+    def _raise_group_conflict(self, field_name: str) -> None:
+        raise FieldGroupConflictError(
+            f"Field {field_name!r} is written both as part of a field group"
+            " and through the single-field API. Set group_conflict_policy"
+            " to 'merge' to allow mixing both sources."
+        )
+
+    def _check_single_field_conflict(self, field_name: str) -> None:
+        if self.group_conflict_policy == "reject" and field_name in self._group_fields:
+            self._raise_group_conflict(field_name)
+
+    def _check_group_write_conflict(self, field_names: Iterable[str]) -> None:
+        if self.group_conflict_policy != "reject":
+            return
+        for name in field_names:
+            if name in self._values:
+                self._raise_group_conflict(name)
+
+    def _remove_single_events(self, field_name: str) -> None:
+        self._events[:] = [
+            event
+            for event in self._events
+            if not (event[0] == "single" and event[1] == field_name)
+        ]
+
+    def _drop_groups_for_fields(self, field_names: Iterable[str]) -> None:
+        names = set(field_names)
+        for record in self._groups:
+            for name in names:
+                record.pop(name, None)
+        emptied = [record for record in self._groups if not record]
+        self._groups[:] = [record for record in self._groups if record]
+        self._events[:] = [
+            event
+            for event in self._events
+            if not (event[0] == "group" and event[1] in emptied)
+        ]
+        for name in names:
+            self._remove_single_events(name)
+            self._values.pop(name, None)
+            if not any(name in record for record in self._groups):
+                self._group_fields.discard(name)
+
+    def _clean_group_record(self, record: Mapping[str, Any]) -> dict[str, list[Any]]:
+        """Run the input processor of every field on the values of one record.
+
+        A field missing from the record is simply absent from the result: the
+        values of other records are never used to fill it. A field whose
+        processor drops every value is dropped from the record while the other
+        fields of the same record are kept, preserving the record identity.
+        """
+        cleaned: dict[str, list[Any]] = {}
+        for field_name, raw_value in record.items():
+            processed = self._process_input_value(field_name, arg_to_iter(raw_value))
+            processed_values = list(arg_to_iter(processed))
+            if processed_values:
+                cleaned[field_name] = processed_values
+        return cleaned
 
     def get_value(
         self,
@@ -322,9 +536,23 @@ class ItemLoader:
         Populate the item with the data collected so far, and return it. The
         data collected is first passed through the :ref:`output processors
         <processors>` to get the final value to assign to each item field.
+
+        Values collected through field groups are realigned field by field
+        while keeping the order of the records: each output field receives the
+        values of the records that contained it, in record order, optionally
+        followed by the values collected through the single-field API when the
+        ``"merge"`` conflict policy is in use.
         """
         adapter = ItemAdapter(self.item)
-        for field_name in tuple(self._values):
+        field_names: list[str] = []
+        for event in self._events:
+            if event[0] == "group":
+                for field_name in event[1]:
+                    if field_name not in field_names:
+                        field_names.append(field_name)
+            elif event[1] not in field_names:
+                field_names.append(event[1])
+        for field_name in field_names:
             value = self.get_output_value(field_name)
             if value is not None:
                 adapter[field_name] = value
@@ -338,7 +566,7 @@ class ItemLoader:
         """
         proc = self.get_output_processor(field_name)
         proc = wrap_loader_context(proc, self.context)
-        value = self._values.get(field_name, [])
+        value = self._get_field_values(field_name)
         try:
             return proc(value)
         except Exception as e:
@@ -348,8 +576,33 @@ class ItemLoader:
             ) from e
 
     def get_collected_values(self, field_name: str) -> list[Any]:
-        """Return the collected values for the given field."""
-        return self._values.get(field_name, [])
+        """Return the collected values for the given field.
+
+        For a field populated through field groups, the values stored in the
+        grouped records are returned in record order, followed by the values
+        collected through the single-field API (only possible with the
+        ``"merge"`` conflict policy).
+        """
+        return self._get_field_values(field_name)
+
+    def _get_field_values(self, field_name: str) -> list[Any]:
+        values: list[Any] = []
+        for event in self._events:
+            if event[0] == "group":
+                values.extend(event[1].get(field_name, ()))
+            elif event[1] == field_name:
+                values.extend(event[2])
+        return values
+
+    def get_collected_group_records(self) -> list[Mapping[str, list[Any]]]:
+        """Return a copy of the collected :ref:`field groups <field-groups>`.
+
+        Each item is one record, mapping field names to the values collected
+        for that field within the record. Records that were fully filtered out
+        by input processors are absent, and a field dropped inside a record is
+        absent from that record only.
+        """
+        return [dict(record) for record in self._groups]
 
     def get_input_processor(self, field_name: str) -> Callable[..., Any]:
         proc = getattr(self, f"{field_name}_in", None)

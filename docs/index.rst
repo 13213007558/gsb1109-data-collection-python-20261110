@@ -106,6 +106,7 @@ Contents
     processors
     loaders-context
     nested-loaders
+    field-groups
     extending-loaders
     rule-usage
     built-in-processors
