@@ -1327,3 +1327,184 @@ def test_draw_past_long_visited_run():
     assert store.get_url("https://a.org") == "https://a.org/150"
     store.add_urls([f"https://a.org/{i}" for i in range(200)], visited=True)
     assert store.get_url("https://a.org") is None
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_alias_site_move(compressed):
+    "A confirmed permanent redirect merges both address records, no pending URL is lost."
+    store = UrlStore(compressed=compressed)
+    store.add_urls(
+        [
+            "http://old-example.org/a",
+            "http://old-example.org/b",
+            "http://old-example.org/c",
+        ]
+    )
+    store.add_urls(["https://new-example.org/c", "https://new-example.org/d"])
+    # /a fetched on the old site, /c fetched on the new one
+    assert store.get_url("http://old-example.org") == "http://old-example.org/a"
+    assert store.get_url("https://new-example.org") == "https://new-example.org/c"
+    old_timestamp = store.urldict["http://old-example.org"].timestamp
+    new_timestamp = store.urldict["https://new-example.org"].timestamp
+
+    # before the move: two separate sets of visit states
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "http://old-example.org/b",
+        "http://old-example.org/c",
+    ]
+    assert store.find_unvisited_urls("https://new-example.org") == [
+        "https://new-example.org/d"
+    ]
+
+    store.add_alias(
+        "http://old-example.org", "https://new-example.org", source="redirect:301"
+    )
+
+    # after the move: one record, all discovery sources and counts kept
+    assert store.get_known_domains() == ["https://new-example.org"]
+    assert store.find_known_urls("https://new-example.org") == [
+        "https://new-example.org/c",
+        "https://new-example.org/d",
+        "https://new-example.org/a",
+        "https://new-example.org/b",
+    ]
+    merged = store.urldict["https://new-example.org"]
+    assert merged.count == 2
+    assert old_timestamp is not None and new_timestamp is not None
+    assert merged.timestamp == max(old_timestamp, new_timestamp)
+    # explicit pending rule: unvisited only if unvisited on both sides,
+    # /c fetched on the new site counts as fetched on the old one
+    pending = ["https://new-example.org/d", "https://new-example.org/b"]
+    assert store.find_unvisited_urls("https://new-example.org") == pending
+    # the old address answers the same queries, no unvisited entry is lost
+    assert store.find_unvisited_urls("http://old-example.org") == pending
+    assert store.has_been_visited("http://old-example.org/a")
+    assert store.has_been_visited("http://old-example.org/c")
+    assert not store.has_been_visited("http://old-example.org/b")
+
+    # undoing the alias restores both original records
+    assert store.remove_alias("http://old-example.org") is True
+    assert store.get_aliases() == []
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "http://old-example.org/b",
+        "http://old-example.org/c",
+    ]
+    assert store.find_unvisited_urls("https://new-example.org") == [
+        "https://new-example.org/d"
+    ]
+    assert store.remove_alias("http://old-example.org") is False
+
+
+def test_alias_temporary_redirect():
+    "A temporary redirect is recorded for inspection but never merged."
+    store = UrlStore()
+    store.add_urls(["http://old-example.org/a", "https://new-example.org/b"])
+    store.add_alias(
+        "http://old-example.org",
+        "https://new-example.org",
+        permanent=False,
+        source="redirect:302",
+    )
+    aliases = store.get_aliases()
+    assert len(aliases) == 1
+    record = aliases[0]
+    assert record["alias"] == "http://old-example.org"
+    assert record["target"] == "https://new-example.org"
+    assert record["kind"] == "temporary"
+    assert record["source"] == "redirect:302"
+    assert record["merged"] is False
+    # lookups and writes are unaffected
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "http://old-example.org/a"
+    ]
+    store.add_urls(["http://old-example.org/c"])
+    assert store.find_known_urls("https://new-example.org") == [
+        "https://new-example.org/b"
+    ]
+    # once confirmed permanent, the same relation upgrades and merges
+    store.add_alias(
+        "http://old-example.org", "https://new-example.org", source="redirect:301"
+    )
+    aliases = store.get_aliases()
+    assert len(aliases) == 1
+    assert aliases[0]["kind"] == "permanent" and aliases[0]["merged"] is True
+    assert sorted(store.find_unvisited_urls("https://new-example.org")) == [
+        "https://new-example.org/a",
+        "https://new-example.org/b",
+        "https://new-example.org/c",
+    ]
+
+
+def test_alias_cycle_and_conflicts():
+    "Cycles and contradictory targets are rejected and stay inspectable."
+    store = UrlStore()
+    store.add_urls(["http://a.org/1", "http://b.org/2", "http://c.org/3"])
+    store.add_alias("http://a.org", "http://b.org", source="redirect:301")
+    store.add_alias("http://b.org", "http://c.org", source="redirect:301")
+    # self-alias, direct and chained cycles
+    with pytest.raises(ValueError, match="cycle"):
+        store.add_alias("http://d.org", "http://d.org")
+    with pytest.raises(ValueError, match="cycle"):
+        store.add_alias("http://c.org", "http://a.org")
+    with pytest.raises(ValueError, match="cycle"):
+        store.add_alias("http://c.org", "http://b.org")
+    # contradictory target for a known alias
+    with pytest.raises(ValueError, match="Conflicting"):
+        store.add_alias("http://a.org", "http://c.org")
+    # a permanent record cannot be re-registered as temporary
+    with pytest.raises(ValueError, match="Conflicting"):
+        store.add_alias("http://a.org", "http://b.org", permanent=False)
+    # the same confirmation twice is a no-op
+    store.add_alias("http://a.org", "http://b.org", source="redirect:301")
+    aliases = store.get_aliases()
+    assert len(aliases) == 2
+    assert {r["alias"] for r in aliases} == {"http://a.org", "http://b.org"}
+    # the chain resolves to the final target
+    assert sorted(store.find_unvisited_urls("http://a.org")) == [
+        "http://c.org/1",
+        "http://c.org/2",
+        "http://c.org/3",
+    ]
+
+
+def test_alias_redirects_writes():
+    "After a confirmed move, additions and draws for the old address use the new one."
+    store = UrlStore()
+    store.add_urls(["https://new-example.org/a"])
+    store.add_alias(
+        "http://old-example.org", "https://new-example.org", source="redirect:301"
+    )
+    store.add_urls(["http://old-example.org/b"])
+    assert store.get_known_domains() == ["https://new-example.org"]
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "https://new-example.org/a",
+        "https://new-example.org/b",
+    ]
+    assert store.get_url("http://old-example.org") == "https://new-example.org/a"
+
+
+def test_alias_persistence(tmp_path):
+    "Aliases and their undo snapshots survive a write/load roundtrip."
+    store = UrlStore(compressed=True)
+    store.add_urls(["http://old-example.org/a", "http://old-example.org/b"])
+    assert store.get_url("http://old-example.org") == "http://old-example.org/a"
+    store.add_urls(["https://new-example.org/c"])
+    store.add_alias(
+        "http://old-example.org", "https://new-example.org", source="redirect:301"
+    )
+    tmp = str(tmp_path / "urlstore.pickle")
+    store.write(tmp)
+    store = load_store(tmp)
+    aliases = store.get_aliases()
+    assert len(aliases) == 1 and aliases[0]["source"] == "redirect:301"
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "https://new-example.org/c",
+        "https://new-example.org/b",
+    ]
+    assert store.remove_alias("http://old-example.org") is True
+    assert store.find_unvisited_urls("http://old-example.org") == [
+        "http://old-example.org/b"
+    ]
+    assert store.find_unvisited_urls("https://new-example.org") == [
+        "https://new-example.org/c"
+    ]

@@ -128,6 +128,42 @@ class UrlPathTuple:
         return self.urlpath.decode("utf-8")
 
 
+class AliasRecord:
+    """Record of a caller-confirmed address alias, e.g. the target of a
+    redirect observed after a site move. Aliases are only created through
+    UrlStore.add_alias(), never guessed from similar paths."""
+
+    __slots__ = (
+        "alias",
+        "target",
+        "permanent",
+        "source",
+        "timestamp",
+        "merged",
+        "merged_into",
+        "snapshot",
+    )
+
+    def __init__(
+        self,
+        alias: str,
+        target: str,
+        permanent: bool,
+        source: str | None = None,
+    ) -> None:
+        self.alias: str = alias
+        self.target: str = target
+        self.permanent: bool = permanent
+        # who confirmed the relation, e.g. "redirect:301"
+        self.source: str | None = source
+        self.timestamp: datetime = datetime.now()
+        # whether store entries were merged at registration, and under which key
+        self.merged: bool = False
+        self.merged_into: str | None = None
+        # (alias entry, target entry) as stored before the merge, for undo
+        self.snapshot: tuple[DomainEntry | None, DomainEntry | None] | None = None
+
+
 PathIndex = dict[str, UrlPathTuple]
 
 # positions checked by index before _first_unvisited walks the deque
@@ -188,6 +224,23 @@ def _dedup_extend(
     return len(new)
 
 
+def _snapshot_entry(entry: DomainEntry | None) -> DomainEntry | None:
+    "Copy a domain entry so that a merge can be undone, sharing immutable parts."
+    if entry is None:
+        return None
+    snapshot = DomainEntry(state=entry.state)
+    snapshot.count = entry.count
+    snapshot.cursor = entry.cursor
+    snapshot.rules = entry.rules
+    snapshot.timestamp = entry.timestamp
+    snapshot.total = entry.total
+    if isinstance(entry.tuples, deque):
+        snapshot.tuples = deque(UrlPathTuple(u.path(), u.visited) for u in entry.tuples)
+    else:  # compressed bytes are immutable
+        snapshot.tuples = entry.tuples
+    return snapshot
+
+
 class UrlStore:
     """Defines a class to store domain-classified URLs and perform checks against it.
 
@@ -204,6 +257,7 @@ class UrlStore:
         "strict",
         "trailing_slash",
         "urldict",
+        "_aliases",
         "_hot",
         "_index",
         "_lock",
@@ -224,6 +278,8 @@ class UrlStore:
         self.strict: bool = strict
         self.trailing_slash: bool = trailing_slash
         self.urldict: dict[str, DomainEntry] = {}
+        # caller-confirmed address aliases, e.g. redirects after a site move
+        self._aliases: dict[str, AliasRecord] = {}
         # last written domain, kept uncompressed, and its path index
         self._hot: DomainEntry | None = None
         self._index: PathIndex | None = None
@@ -262,6 +318,7 @@ class UrlStore:
         self._hot = self._index = None
         self._lock = RLock()
         self._offset = 0
+        self._aliases = {}
         for slot, value in state.items():
             setattr(self, slot, value)
         # older stores use a defaultdict, whose reads create entries
@@ -299,7 +356,7 @@ class UrlStore:
         return inputdict
 
     def _find(self, key: str) -> str | None:
-        "Return the stored key for a normalized key or its http/https twin."
+        "Return the stored key for a normalized key, its http/https twin, or a registered alias."
         if key in self.urldict:
             return key
         if (
@@ -307,7 +364,28 @@ class UrlStore:
             and (twin := _swap_scheme(key)) in self.urldict
         ):
             return twin
+        resolved = self._resolve_alias(key)
+        if resolved != key:
+            return self._find(resolved)
         return None
+
+    def _alias_record(self, key: str) -> AliasRecord | None:
+        "Return the alias record stored under a key or its http/https twin."
+        record = self._aliases.get(key)
+        if record is None and key.startswith(("http://", "https://")):
+            record = self._aliases.get(_swap_scheme(key))
+        return record
+
+    def _resolve_alias(self, key: str) -> str:
+        "Follow permanent alias records from a key to the canonical store key."
+        seen = set()
+        while key not in seen:
+            seen.add(key)
+            record = self._alias_record(key)
+            if record is None or not record.permanent:
+                break
+            key = record.target
+        return key
 
     def _load_urls(self, domain: str) -> deque[UrlPathTuple]:
         raw = self.urldict[domain].tuples
@@ -411,6 +489,9 @@ class UrlStore:
     ) -> None:
         domain = self._merge_twin(domain)
         if domain not in self.urldict:
+            # a confirmed alias redirects the writes to the canonical address
+            domain = self._merge_twin(self._resolve_alias(domain))
+        if domain not in self.urldict:
             self.urldict[domain] = DomainEntry()
         entry = self.urldict[domain]
         if entry.state is State.BUSTED:
@@ -495,10 +576,125 @@ class UrlStore:
         "Re-initialize the URL store."
         with self._lock:
             self.urldict = {}
+            self._aliases = {}
             self._hot = self._index = None
         clear_caches()
         num = gc.collect()
         LOGGER.debug("UrlStore reset, %s objects in GC", num)
+
+    # ADDRESS ALIASES
+
+    def add_alias(
+        self,
+        alias: str,
+        target: str,
+        permanent: bool = True,
+        source: str | None = None,
+    ) -> None:
+        """Register a caller-confirmed alias of an address, typically the target
+        of a redirect observed after a site move, so that both addresses share
+        one set of URLs and visit states.
+
+        Aliases are only created by this explicit call, never guessed from
+        similar paths. A permanent alias (e.g. a 301 redirect) merges both
+        address records: all known URLs and download counts are kept, a URL
+        stays unvisited only if it is unvisited on both sides, and the newest
+        timestamp wins. A temporary alias (e.g. a 302 redirect) is only
+        recorded for inspection and leaves the store untouched.
+
+        Raises ValueError on alias cycles and on contradictory targets."""
+        alias_key = _host_key(alias)
+        target_key = _host_key(target)
+        with self._lock:
+            alias_key = self._merge_twin(alias_key)
+            target_key = self._merge_twin(target_key)
+            # following the chain from the target must not lead back to the alias
+            seen = set()
+            current = target_key
+            while current not in seen:
+                if current == alias_key:
+                    raise ValueError(
+                        f"Alias cycle: {alias_key} is already reachable "
+                        f"from {target_key}"
+                    )
+                seen.add(current)
+                hop = self._alias_record(current)
+                if hop is None or not hop.permanent:
+                    break
+                current = hop.target
+            existing = self._alias_record(alias_key)
+            if existing is not None:
+                if existing.target != target_key:
+                    raise ValueError(
+                        f"Conflicting aliases: {alias_key} already points to "
+                        f"{existing.target}, cannot also point to {target_key}"
+                    )
+                if existing.permanent and not permanent:
+                    raise ValueError(
+                        f"Conflicting aliases: {alias_key} is already a permanent "
+                        f"alias of {target_key}, cannot downgrade to temporary"
+                    )
+                if existing.permanent == permanent:
+                    return  # the same confirmation registered twice
+                # a temporary record confirmed as permanent: upgrade it below
+                del self._aliases[existing.alias]
+            record = AliasRecord(alias_key, target_key, permanent, source)
+            if permanent and alias_key in self.urldict:
+                # merge into the canonical key the target resolves to
+                canonical = self._resolve_alias(target_key)
+                record.snapshot = (
+                    _snapshot_entry(self.urldict.get(alias_key)),
+                    _snapshot_entry(self.urldict.get(canonical)),
+                )
+                if canonical in self.urldict:
+                    self._merge_entries(canonical, alias_key)
+                    del self.urldict[alias_key]
+                else:
+                    # simple rename: move the entry under the target key
+                    self.urldict[canonical] = self.urldict.pop(alias_key)
+                record.merged = True
+                record.merged_into = canonical
+            self._aliases[record.alias] = record
+
+    def remove_alias(self, alias: str) -> bool:
+        """Withdraw a registered alias and, if a merge happened, restore both
+        address records as they were stored before it. Return False if the
+        alias is unknown. URLs added after the merge stay where they landed."""
+        alias_key = _host_key(alias)
+        with self._lock:
+            record = self._alias_record(alias_key)
+            if record is None:
+                return False
+            del self._aliases[record.alias]
+            if record.snapshot is not None:
+                self._freeze()
+                alias_entry, target_entry = record.snapshot
+                if target_entry is None:
+                    self.urldict.pop(record.merged_into or record.target, None)
+                else:
+                    self.urldict[record.merged_into or record.target] = target_entry
+                if alias_entry is not None:
+                    self.urldict[record.alias] = alias_entry
+                self.done = False
+                self._set_done()
+            return True
+
+    def get_aliases(self) -> list[dict[str, Any]]:
+        """Return the registered aliases as dicts with the keys alias, target,
+        kind ("permanent" or "temporary"), source, timestamp and merged, so
+        that recorded redirects can be inspected before being trusted."""
+        with self._lock:
+            return [
+                {
+                    "alias": record.alias,
+                    "target": record.target,
+                    "kind": "permanent" if record.permanent else "temporary",
+                    "source": record.source,
+                    "timestamp": record.timestamp,
+                    "merged": record.merged,
+                }
+                for record in self._aliases.values()
+            ]
 
     # DOMAINS / HOSTNAMES
 

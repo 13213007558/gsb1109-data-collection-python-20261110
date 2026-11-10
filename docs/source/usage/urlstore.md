@@ -131,6 +131,61 @@ store.discard(['https://spam.example.com'])
 ```
 
 
+## Address aliases (site moves)
+
+When a site moves to a new domain, the store ends up with two sets of visit
+states for the same content. Once a redirect has been confirmed (e.g. by
+observing a 301), register it explicitly — the store never guesses aliases
+from similar paths on its own:
+
+```python
+store = UrlStore()
+store.add_urls(['http://old-example.org/a', 'http://old-example.org/b'])
+store.add_urls(['https://new-example.org/b', 'https://new-example.org/c'])
+store.get_url('http://old-example.org')   # fetched /a on the old site
+store.get_url('https://new-example.org')  # fetched /b on the new site
+
+# before the move: two separate records
+store.find_unvisited_urls('http://old-example.org')
+# ['http://old-example.org/b']
+store.find_unvisited_urls('https://new-example.org')
+# ['https://new-example.org/c']
+
+store.add_alias('http://old-example.org', 'https://new-example.org',
+                source='redirect:301')
+
+# after the move: one record, nothing pending is lost, and the old
+# address answers the same queries
+store.find_unvisited_urls('https://new-example.org')
+# ['https://new-example.org/c']
+store.find_unvisited_urls('http://old-example.org')
+# ['https://new-example.org/c']
+store.has_been_visited('http://old-example.org/a')
+# True
+```
+
+Merge rules for a permanent alias:
+
+- All known URLs from both addresses are kept (discovery sources are unioned).
+- A URL stays unvisited only if it is unvisited on both sides — a page
+  already fetched under either address counts as visited.
+- Download counts are summed and the newest timestamp wins.
+
+A temporary redirect (e.g. 302) is only recorded for inspection and leaves
+the store untouched; `get_aliases()` lists all registered aliases with their
+kind, source and timestamp. Registering an alias cycle or a contradictory
+target raises a `ValueError`. A wrong alias can be withdrawn with
+`remove_alias()`, which restores both address records as they were before
+the merge:
+
+```python
+store.get_aliases()
+# [{'alias': 'http://old-example.org', 'target': 'https://new-example.org',
+#   'kind': 'permanent', 'source': 'redirect:301', ...}]
+store.remove_alias('http://old-example.org')  # restores the original records
+```
+
+
 ## Saving and loading UrlStore state
 
 Save and restore state across sessions. `UrlStore.write()` stores state

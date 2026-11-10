@@ -1,6 +1,11 @@
 # History / Changelog
 
 
+## Unreleased
+
+- `UrlStore`: explicit address aliases for site moves — `add_alias()` registers a caller-confirmed redirect target (permanent aliases merge both address records, temporary ones are only recorded), `get_aliases()` inspects them, `remove_alias()` undoes a merge and restores the original records
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)
