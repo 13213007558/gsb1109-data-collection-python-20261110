@@ -106,6 +106,7 @@ Contents
     processors
     loaders-context
     nested-loaders
+    record-validation
     extending-loaders
     rule-usage
     built-in-processors

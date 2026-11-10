@@ -16,10 +16,17 @@ from parsel.utils import extract_regex, flatten
 from itemloaders.common import wrap_loader_context
 from itemloaders.processors import Identity
 from itemloaders.utils import arg_to_iter
+from itemloaders.validation import Rule as Rule
+from itemloaders.validation import RuleViolation as RuleViolation
+from itemloaders.validation import ValidationError as ValidationError
+from itemloaders.validation import ValidationProblem as ValidationProblem
+from itemloaders.validation import rule as rule
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, MutableMapping
+    from collections.abc import Callable, Iterable, MutableMapping, Sequence
     from re import Pattern
+
+    from itemloaders.validation import ValidationRule
 
 
 class _StatsCollector(Protocol):
@@ -106,6 +113,17 @@ class ItemLoader:
         The default output processor to use for those fields which don't specify
         one.
 
+    .. attribute:: validation_rules
+
+        A sequence of whole-record validation rules, each an object following
+        the :class:`~itemloaders.validation.ValidationRule` interface (such as
+        :class:`~itemloaders.validation.Rule`, usually declared with the
+        :func:`~itemloaders.rule` decorator). The rules run in
+        :meth:`load_item`, after the output processors have converted every
+        field and before the item is populated. It defaults to an empty
+        sequence, so loaders that only need field processors require no
+        configuration.
+
     .. attribute:: selector
 
         The :class:`~parsel.selector.Selector` object to extract data from.
@@ -118,6 +136,15 @@ class ItemLoader:
     default_item_class: type = dict
     default_input_processor: Callable[..., Any] = Identity()
     default_output_processor: Callable[..., Any] = Identity()
+    validation_rules: Sequence[ValidationRule] = ()
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        declared_rules = tuple(
+            value for value in vars(cls).values() if isinstance(value, Rule)
+        )
+        if declared_rules:
+            cls.validation_rules = (*cls.validation_rules, *declared_rules)
 
     def __init__(
         self,
@@ -322,14 +349,80 @@ class ItemLoader:
         Populate the item with the data collected so far, and return it. The
         data collected is first passed through the :ref:`output processors
         <processors>` to get the final value to assign to each item field.
+
+        Whole-record :attr:`validation_rules` are then evaluated against the
+        converted field values, before the item is returned. Field conversion
+        errors and validation problems are collected together and raised as a
+        single :class:`~itemloaders.validation.ValidationError`; in that case
+        the item is not populated with the failing record. A rule whose
+        dependency failed to convert is skipped rather than emitting a
+        misleading derived error, while a rule whose dependency is absent
+        from the record reports a missing-dependency problem.
         """
         adapter = ItemAdapter(self.item)
+        converted: dict[str, Any] = {}
+        problems: list[ValidationProblem] = []
+        failed_fields: set[str] = set()
         for field_name in tuple(self._values):
-            value = self.get_output_value(field_name)
+            try:
+                value = self.get_output_value(field_name)
+            except ValueError as error:
+                failed_fields.add(field_name)
+                problems.append(
+                    ValidationProblem(message=str(error), fields=(field_name,))
+                )
+                continue
             if value is not None:
-                adapter[field_name] = value
+                converted[field_name] = value
+        problems.extend(self._get_validation_problems(converted, failed_fields))
+        if problems:
+            raise ValidationError(problems)
+        for field_name, value in converted.items():
+            adapter[field_name] = value
 
         return adapter.item
+
+    def _get_validation_problems(
+        self, values: dict[str, Any], failed_fields: set[str]
+    ) -> list[ValidationProblem]:
+        """Run :attr:`validation_rules` against converted *values*.
+
+        Each rule is evaluated independently so that every independent
+        problem is reported. A rule depending on a field whose conversion
+        failed is skipped without any additional problem: the field-level
+        error already explains it, and running the rule would only produce a
+        misleading derived business error. A rule depending on a field absent
+        from the converted record reports a missing-dependency problem
+        instead of running.
+        """
+        problems: list[ValidationProblem] = []
+        for validation_rule in self.validation_rules:
+            fields = tuple(validation_rule.fields)
+            if any(field_name in failed_fields for field_name in fields):
+                continue
+            missing = tuple(
+                field_name for field_name in fields if field_name not in values
+            )
+            if missing:
+                problems.append(
+                    ValidationProblem(
+                        message="required field(s) missing from the record",
+                        fields=fields,
+                        rule=validation_rule.name,
+                        missing=missing,
+                    )
+                )
+                continue
+            message = validation_rule.validate(values)
+            if message is not None:
+                problems.append(
+                    ValidationProblem(
+                        message=message,
+                        fields=fields,
+                        rule=validation_rule.name,
+                    )
+                )
+        return problems
 
     def get_output_value(self, field_name: str) -> Any:
         """

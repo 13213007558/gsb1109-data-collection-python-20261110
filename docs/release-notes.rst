@@ -5,6 +5,21 @@
 Release notes
 =============
 
+.. _release-1.6.0:
+
+itemloaders 1.6.0 (unreleased)
+------------------------------
+
+-   Added whole-record validation rules to :class:`ItemLoader`. Rules
+    declared with the :func:`~itemloaders.rule` decorator, or via the
+    :attr:`~ItemLoader.validation_rules` attribute, run in
+    :meth:`~ItemLoader.load_item` after the output processors and before
+    the item is written. They can check relationships between several
+    fields, report missing dependencies and failed conditions separately,
+    collect every independent problem while keeping the original
+    field-level errors, and skip rules that depend on a field whose
+    conversion failed. See :ref:`record-validation`.
+
 .. _release-1.5.0:
 
 itemloaders 1.5.0 (2026-09-29)
