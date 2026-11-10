@@ -44,6 +44,14 @@ You can nest loaders arbitrarily and they work with either xpath or css selector
 As a general guideline, use nested loaders when they make your code simpler but do
 not go overboard with nesting or your parser can become difficult to read.
 
+Nested loaders share the collected values and the item with their parent loader.
+This also defines the failure scope of an atomic load: when calling
+``load_item(atomic=True)`` on any loader of the family, a failing output
+processor in any field — including fields collected through nested loaders —
+aborts the entire load and no field is written to the shared item. The
+collected raw values are kept, so the offending value can be fixed and the
+load retried.
+
 .. versionchanged:: VERSION
 
    Nested loaders inherit the parent's processor context, with explicit keyword

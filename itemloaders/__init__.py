@@ -317,13 +317,43 @@ class ItemLoader:
                 ) from e
         return value
 
-    def load_item(self) -> Any:
+    def load_item(self, atomic: bool = False) -> Any:
         """
         Populate the item with the data collected so far, and return it. The
         data collected is first passed through the :ref:`output processors
         <processors>` to get the final value to assign to each item field.
+
+        :param atomic: When ``True``, load atomically: every field value is
+            computed first, and the item is only populated if the output
+            processors of **all** fields succeed. If any output processor
+            raises, the exception is propagated and the item is left
+            untouched, so fields processed before the failing one are not
+            written back either. The collected (raw) values are kept, so the
+            offending value can be fixed, e.g. with :meth:`replace_value`,
+            and :meth:`load_item` retried.
+
+            Output processors are still called exactly once per field (their
+            results are buffered, not pre-checked), so processors with side
+            effects are never invoked twice for the same load.
+
+            .. note::
+                Nested loaders share the collected values with their parent
+                loader, so the failure scope of an atomic load is the whole
+                loader family: a failing output processor in any field,
+                including fields collected through nested loaders, aborts the
+                entire load and no field is written to the shared item.
+        :type atomic: bool
         """
         adapter = ItemAdapter(self.item)
+        if atomic:
+            output_values = {}
+            for field_name in tuple(self._values):
+                value = self.get_output_value(field_name)
+                if value is not None:
+                    output_values[field_name] = value
+            for field_name, value in output_values.items():
+                adapter[field_name] = value
+            return adapter.item
         for field_name in tuple(self._values):
             value = self.get_output_value(field_name)
             if value is not None:
