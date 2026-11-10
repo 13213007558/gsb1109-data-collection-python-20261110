@@ -357,6 +357,40 @@ with the names of all the defined fields for the item.
 Return a `dict` object with the contents of the adapter. This works slightly different than
 calling `dict(adapter)`, because it's applied recursively to nested items (if there are any).
 
+#### `patch(operations: Iterable[Set | Delete]) -> None`
+
+Atomically apply a batch of explicit patch operations to the item. This is
+useful when a detail page only returns a subset of fields, and the three
+following cases must not be conflated when updating a stored record:
+
+-   a field missing from the response means “not scraped”: simply do not
+    include an operation for it, and it is left untouched;
+-   `itemadapter.Set(path, None)` means “explicitly blank the field”;
+-   `itemadapter.Delete(path)` means “remove the old value” (a mapping key,
+    an item field or a list element).
+
+Paths are tuples of field names and list indices that can descend into
+nested dicts, lists, dataclasses and attrs classes. List indices are always
+interpreted against the same pre-modification snapshot, so deleting several
+elements from the same list in one batch does not suffer from index
+shifting. If any path does not exist, any list index is out of range, or
+any target field is read-only, the whole batch fails with
+`itemadapter.PatchError` and the item is left unchanged.
+
+```python
+>>> from itemadapter import Delete, ItemAdapter, Set
+>>> item = {"sku": "A-1", "price": 100.0, "tags": ["new", "old", "promo"], "stock": 42}
+>>> adapter = ItemAdapter(item)
+>>> adapter.patch([
+...     Set(("price",), 80.0),   # scraped: update the price
+...     Delete(("tags", 1)),     # stale: delete the old tag "old"
+...     Set(("stock",), None),   # sold out: explicitly blank the stock
+... ])                           # "sku" is not in the patch: left untouched
+>>> item
+{'sku': 'A-1', 'price': 80.0, 'tags': ['new', 'promo'], 'stock': None}
+
+```
+
 
 ### function `itemadapter.utils.is_item(obj: Any) -> bool`
 

@@ -6,7 +6,10 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable, Iterator, KeysView, MutableMapping
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
+
+if TYPE_CHECKING:
+    from itemadapter.patch import PatchOp
 
 from itemadapter._imports import _is_typeddict, _scrapy_item_classes, attrs
 from itemadapter._json_schema import (
@@ -478,6 +481,20 @@ class ItemAdapter(MutableMapping[str, Any]):
     def field_names(self) -> KeysView[str]:
         """Return read-only key view with the names of all the defined fields for the item."""
         return self.adapter.field_names()
+
+    def patch(self, operations: Iterable[PatchOp]) -> None:
+        """Atomically apply a batch of explicit patch operations to the item.
+
+        ``operations`` is an iterable of :class:`itemadapter.patch.Set` and
+        :class:`itemadapter.patch.Delete` operations. Fields not referenced
+        by any operation are left untouched. If any operation fails (missing
+        path, out-of-range list index or read-only target field),
+        :class:`itemadapter.patch.PatchError` is raised and the item is left
+        unchanged.
+        """
+        from itemadapter.patch import apply_patch
+
+        apply_patch(self.item, operations)
 
     def asdict(self) -> dict[str, Any]:
         """Return a dict object with the contents of the adapter. This works slightly different
