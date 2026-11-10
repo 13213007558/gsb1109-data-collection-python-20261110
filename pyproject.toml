@@ -1,0 +1,268 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itemadapter"
+description = "Common interface for data container classes"
+authors = [
+    { name = "Eugenio Lacuesta", email = "eugenio.lacuesta@gmail.com" },
+]
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Operating System :: OS Independent",
+    "Framework :: Scrapy",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+attrs = [
+    "attrs>=22.1.0",
+]
+pydantic = [
+    "pydantic>=2.7",
+]
+scrapy = [
+    "scrapy>=2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/scrapy/itemadapter"
+Source = "https://github.com/scrapy/itemadapter"
+Tracker = "https://github.com/scrapy/itemadapter/issues"
+"Release notes" = "https://github.com/scrapy/itemadapter/blob/master/Changelog.md"
+
+[tool.hatch.version]
+path = "itemadapter/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/itemadapter",
+    "/tests",
+    "/Changelog.md",
+    "/tox.ini",
+]
+
+[tool.bumpversion]
+current_version = "0.14.0"
+commit = true
+tag = true
+
+[[tool.bumpversion.files]]
+filename = "Changelog.md"
+search = "\\(unreleased\\)$"
+replace = "({now:%Y-%m-%d})"
+regex = true
+
+[[tool.bumpversion.files]]
+filename = "itemadapter/__init__.py"
+
+[tool.coverage.run]
+branch = true
+
+[tool.mypy]
+strict = true
+
+[tool.pylint.MASTER]
+persistent = "no"
+load-plugins=[
+    "pylint_per_file_ignores",
+]
+
+
+[tool.pylint."MESSAGES CONTROL"]
+enable = [
+    "useless-suppression",
+]
+disable = [
+    "cyclic-import",
+    "duplicate-code",
+    "import-error",
+    "import-outside-toplevel",
+    "invalid-name",
+    "line-too-long",  # https://docs.astral.sh/ruff/rules/line-too-long/
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "missing-module-docstring",
+    "not-callable",
+    "pointless-statement",
+    "protected-access",
+    "too-few-public-methods",
+    "too-many-public-methods",
+    "too-many-return-statements",
+    "unused-argument",
+]
+per-file-ignores = [
+    "tests/*:disallowed-name,too-many-instance-attributes",
+    "itemadapter/_imports.py:unused-import,ungrouped-imports",
+]
+
+[tool.pylint.FORMAT]
+expected-line-ending-format = "LF"
+max-line-length = 99
+
+[tool.pylint.IMPORTS]
+allow-any-import-level = [
+    "attrs",
+    "dataclasses",
+    "scrapy"
+]
+
+[tool.ruff]
+line-length = 99
+
+[tool.ruff.lint]
+extend-select = [
+    # flake8-builtins
+    "A",
+    # flake8-async
+    "ASYNC",
+    # flake8-bugbear
+    "B",
+    # flake8-comprehensions
+    "C4",
+    # flake8-commas
+    "COM",
+    # pydocstyle
+    "D",
+    # flake8-future-annotations
+    "FA",
+    # flynt
+    "FLY",
+    # refurb
+    "FURB",
+    # isort
+    "I",
+    # flake8-implicit-str-concat
+    "ISC",
+    # flake8-logging
+    "LOG",
+    # Perflint
+    "PERF",
+    # pygrep-hooks
+    "PGH",
+    # flake8-pie
+    "PIE",
+    # pylint
+    "PL",
+    # flake8-pytest-style
+    "PT",
+    # flake8-use-pathlib
+    "PTH",
+    # flake8-pyi
+    "PYI",
+    # flake8-quotes
+    "Q",
+    # flake8-return
+    "RET",
+    # flake8-raise
+    "RSE",
+    # Ruff-specific rules
+    "RUF",
+    # flake8-bandit
+    "S",
+    # flake8-simplify
+    "SIM",
+    # flake8-slots
+    "SLOT",
+    # flake8-debugger
+    "T10",
+    # flake8-type-checking
+    "TC",
+    # flake8-tidy-imports
+    "TID",
+    # pyupgrade
+    "UP",
+    # pycodestyle warnings
+    "W",
+    # flake8-2020
+    "YTT",
+]
+ignore = [
+    # Trailing comma missing
+    "COM812",
+    # Missing docstring in public module
+    "D100",
+    # Missing docstring in public class
+    "D101",
+    # Missing docstring in public method
+    "D102",
+    # Missing docstring in public function
+    "D103",
+    # Missing docstring in public package
+    "D104",
+    # Missing docstring in magic method
+    "D105",
+    # Missing docstring in public nested class
+    "D106",
+    # Missing docstring in __init__
+    "D107",
+    # One-line docstring should fit on one line with quotes
+    "D200",
+    # No blank lines allowed after function docstring
+    "D202",
+    # 1 blank line required between summary line and description
+    "D205",
+    # Multi-line docstring closing quotes should be on a separate line
+    "D209",
+    # First line should end with a period
+    "D400",
+    # First line should be in imperative mood; try rephrasing
+    "D401",
+    # First line should not be the function's "signature"
+    "D402",
+    # First word of the first line should be properly capitalized
+    "D403",
+    # `import` should be at the top-level of a file
+    "PLC0415",
+    # Too many return statements
+    "PLR0911",
+    # Too many branches
+    "PLR0912",
+    # Too many arguments in function definition
+    "PLR0913",
+    # Too many statements
+    "PLR0915",
+    # Too many positional arguments
+    "PLR0917",
+    # Magic value used in comparison
+    "PLR2004",
+    # String contains ambiguous {}.
+    "RUF001",
+    # Docstring contains ambiguous {}.
+    "RUF002",
+    # Comment contains ambiguous {}.
+    "RUF003",
+    # Mutable class attributes should be annotated with `typing.ClassVar`
+    "RUF012",
+    # Use of `assert` detected
+    "S101",
+    # Yoda condition detected
+    "SIM300",
+]
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-decorators = ["attrs.define"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
