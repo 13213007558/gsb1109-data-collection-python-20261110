@@ -1,0 +1,763 @@
+w3lib release notes
+===================
+
+2.6.0 (2026-11-05)
+------------------
+
+Backwards incompatible changes:
+
+- Dropped support for Python 3.10 (#368) and PyPy (#392).
+
+- w3lib now depends on `frostwork <https://github.com/scrapy/frostwork>`__,
+  which it uses to detect encodings and to read the base URL and meta refresh
+  of HTML documents the way browsers do (#392).
+
+- :func:`~w3lib.encoding.html_to_unicode` now detects the encoding of a body
+  that has no BOM and declares no encoding the way Firefox does: as UTF-8 if
+  the body is valid UTF-8, and otherwise guessed from its bytes and from the
+  top-level domain of the new *url* parameter, instead of assuming UTF-8.
+  UTF-8 is now reported as ``utf-8`` instead of ``utf8`` (#392).
+
+- Encoding labels now resolve to the encodings of the `Encoding Standard`_,
+  decoded the way browsers decode them, in
+  :func:`~w3lib.encoding.html_to_unicode`,
+  :func:`~w3lib.encoding.html_body_declared_encoding`,
+  :func:`~w3lib.encoding.resolve_encoding`, :func:`~w3lib.encoding.read_bom`
+  and :func:`~w3lib.encoding.to_unicode` (#392). In particular:
+
+    - UTF-32 is no longer supported: :func:`~w3lib.encoding.resolve_encoding`
+      returns ``None`` for it, and a UTF-32LE BOM reads as a UTF-16LE one.
+
+    - ``utf-16`` without a BOM is now little-endian, and a ``utf-16`` label
+      declared in the body now means UTF-8.
+
+    - ``gb2312`` and ``gbk`` now resolve to ``gbk`` instead of ``gb18030``.
+
+    - ``x-user-defined`` and ``replacement`` are new possible encoding names,
+      for which importing :mod:`w3lib.encoding` registers Python codecs.
+
+- :func:`~w3lib.encoding.html_body_declared_encoding` now follows the HTML
+  prescan: it no longer stops at the ``<body>`` tag, and it no longer honors
+  misspelled ``http-equiv`` pragmas, such as ``httpequiv="ContentType"``, or
+  a ``<`` followed by whitespace before ``meta`` (#392).
+
+- With an absolute *baseurl*, :func:`~w3lib.html.get_meta_refresh` now
+  returns the meta refresh that a browser follows (#392):
+
+    - The URL is resolved against the ``<base>`` element of the document, and
+      its query is encoded as UTF-8.
+
+    - A refresh without a URL now reloads the document, i.e. returns
+      *baseurl*, instead of returning ``(None, None)``.
+
+    - The fraction of the interval is dropped, e.g. ``0.5`` is ``0.0``.
+
+    - The first of duplicate attributes wins, ``<template>`` content is
+      ignored, and a tag cut by the end of the document is dropped.
+
+- :func:`~w3lib.url.safe_url_string` now parses URLs the way browsers do in
+  more cases (see below), e.g. it serializes ``https://example.com`` as
+  ``https://example.com/`` (#356), which changes the output of
+  :func:`~w3lib.url.canonicalize_url` for some URLs. If you use that output
+  to generate URL fingerprints, new fingerprints might differ from those
+  created with previous w3lib versions.
+
+New features:
+
+- Added :func:`~w3lib.encoding.html_encoding`, which returns the encoding
+  :func:`~w3lib.encoding.html_to_unicode` would use, without decoding the
+  body (#392).
+
+Deprecations and removals:
+
+- ``w3lib.url.safe_download_url()`` is deprecated (#362).
+
+- The *default_encoding* and *auto_detect_fun* parameters of
+  :func:`~w3lib.encoding.html_to_unicode`, and
+  ``w3lib.encoding.DEFAULT_ENCODING_TRANSLATION``, are deprecated (#392).
+
+- The *max_scan* parameter of :func:`~w3lib.html.get_base_url` and
+  :func:`~w3lib.html.get_meta_refresh`, added in 2.5.0, is deprecated and
+  ignored (#392).
+
+- Passing a relative or empty *baseurl* to :func:`~w3lib.html.get_base_url`
+  or :func:`~w3lib.html.get_meta_refresh` is deprecated; pass the absolute URL
+  of the document instead. So is passing *ignore_tags* with tags other than
+  ``script``, ``noscript`` and ``template`` to
+  :func:`~w3lib.html.get_meta_refresh` (#392).
+
+Security and correctness fixes:
+
+- :func:`~w3lib.url.safe_url_string`, and with it
+  :func:`~w3lib.url.canonicalize_url`, no longer disagree with how browsers
+  read a URL in the following cases, which could let a URL resolve to a
+  different host or path than the one these functions reported:
+
+    - Missing or extra slashes after a special scheme are ignored, e.g.
+      ``https:example.com`` is ``https://example.com/`` (#381).
+
+    - The host of a special URL is percent-decoded before IDNA encoding, and a
+      host that then contains a forbidden domain code point, such as ``/``,
+      raises :exc:`ValueError` (#389).
+
+    - A host that ends in a number is serialized as an IPv4 address, e.g.
+      ``0x7f.1`` as ``127.0.0.1``, and raises :exc:`ValueError` if it is not
+      a valid one (#382).
+
+    - The IDNA deviation characters ``ß`` and ``ς`` are kept, e.g.
+      ``faß.de`` is ``xn--fa-hia.de`` instead of ``fass.de`` (#394).
+
+    - The host of a non-special URL is opaque: its case is kept, and it is
+      percent-encoded instead of IDNA-encoded (#364).
+
+    - Brackets in the userinfo are accepted, and a stray ``]`` in the host is
+      rejected (#380, #384).
+
+  Additionally, :func:`~w3lib.url.safe_url_string` now resolves dot segments
+  in the path, including percent-encoded ones such as ``%2e%2e`` (#371), and
+  serializes the empty path of a special URL as ``/``, e.g.
+  ``https://example.com`` as ``https://example.com/`` (#356).
+
+- :func:`~w3lib.html.get_base_url` and :func:`~w3lib.html.get_meta_refresh`
+  now find the base URL and the meta refresh the way browsers do (#392). For
+  the same reason, they now:
+
+    - resolve URLs following the URL living standard (#358);
+
+    - ignore a URL they cannot parse, instead of raising (#385), and
+      :func:`~w3lib.html.get_base_url` ignores ``data:`` and ``javascript:``
+      base URLs (#396);
+
+    - close comments at ``--!>``, ``<!-->`` and ``<!--->`` (#360);
+
+    - do not read ``<base>`` or ``<meta>`` tags written inside an attribute
+      value of another tag (#395), and end their tag names at any HTML
+      whitespace or ``/`` (#397);
+
+    - end ``<script>`` and ``<noscript>`` content at a closing tag that has
+      attributes, and do not treat custom elements such as ``<script-loader>``
+      as ``<script>`` (#379, #388);
+
+    - accept a comma or whitespace as the separator after the refresh
+      interval (#354), and decode character references in each attribute
+      value separately (#359);
+
+    - detect the encoding of a byte string when *encoding* is unknown,
+      instead of raising :exc:`LookupError` (#392).
+
+- :func:`~w3lib.html.remove_comments` now closes comments at ``--!>``,
+  ``<!-->`` and ``<!--->`` (#360), and :func:`~w3lib.html.remove_tags` and
+  :func:`~w3lib.html.replace_tags` now end tag names at any HTML whitespace
+  (#404).
+
+- :func:`~w3lib.html.replace_entities` now looks up named character
+  references in the HTML5 table, case-sensitively, and resolves only legacy
+  ones without a trailing semicolon, as browsers do (#365).
+
+- :func:`~w3lib.encoding.resolve_encoding` no longer resolves non-text and
+  escape codecs, such as ``base64`` or ``unicode-escape``, which let a
+  response turn escaped text into markup (#386).
+
+- :func:`~w3lib.url.parse_data_uri` now decodes base64 data the way browsers
+  do, ignoring ASCII whitespace and allowing missing ``=`` padding, and
+  raises :exc:`ValueError` for a data URI without a comma (#376).
+
+- ``w3lib.url.safe_download_url()`` no longer adds a ``/`` path to
+  non-special URLs, e.g. ``foo://example.org`` stays as is (#361).
+
+- ``w3lib.url.is_url()`` now accepts uppercase schemes, and no longer accepts
+  a scheme without ``://`` (#412).
+
+- Clarified in the documentation when to use
+  :func:`~w3lib.url.safe_url_string` and when
+  :func:`~w3lib.url.canonicalize_url` (#362), and fixed ``VERSION``
+  placeholders left in the 2.5.0 documentation (#377).
+
+- Tests, benchmarking and CI improvements (#355, #357, #369, #374, #378,
+  #400, #410).
+
+.. _Encoding Standard: https://encoding.spec.whatwg.org/
+
+2.5.0 (2026-09-30)
+------------------
+
+New features:
+
+- Added support for Python 3.15 (#295).
+
+- Added :func:`~w3lib.url.add_http_if_no_scheme`, ported from Scrapy, which
+  adds ``http`` as the default scheme to a URL that has none (#309).
+
+- ``w3lib.url.parse_qsl_to_bytes``, :func:`~w3lib.url.url_query_parameter`,
+  :func:`~w3lib.url.add_or_replace_parameter`,
+  :func:`~w3lib.url.add_or_replace_parameters` and
+  :func:`~w3lib.url.canonicalize_url` now accept a *separator* (or
+  *query_separator* for :func:`~w3lib.url.canonicalize_url`) keyword argument,
+  to support query strings that use a separator other than ``&`` (#167).
+
+- :func:`~w3lib.html.get_base_url` and :func:`~w3lib.html.get_meta_refresh`
+  now accept a *max_scan* keyword argument, an upper bound on how much of the
+  document they look at (#336).
+
+- Improved the performance of most :mod:`w3lib.url` functions,
+  :func:`~w3lib.url.safe_url_string` in particular (#257), and of some
+  :mod:`w3lib.html` functions (#256).
+
+- :func:`~w3lib.html.get_base_url` and :func:`~w3lib.html.get_meta_refresh`
+  are now several times faster on typical pages, which have no ``<base>`` tag
+  and no ``<meta>`` refresh tag (#331, #332, #334, #338).
+
+Deprecations and removals:
+
+- The ``w3lib.util`` module is deprecated, and now emits a
+  :exc:`DeprecationWarning` on import (#322).
+
+- The undocumented ``w3lib_replace`` codec error handler is no longer
+  registered (#318).
+
+Security and correctness fixes:
+
+- :func:`~w3lib.url.safe_url_string`, :func:`~w3lib.url.canonicalize_url` and
+  ``w3lib.url.parse_url`` no longer disagree with how browsers and
+  :mod:`urllib.parse` read a URL in the following cases, which could let a URL
+  resolve to a different host or path than the one these functions reported:
+
+    - ``\`` is now treated like ``/`` in the authority and path of
+      special-scheme URLs (#285).
+
+    - An NFKC-normalized backslash in the host is now rejected, like other
+      normalized authority delimiters already were (#280).
+
+    - ASCII tab, carriage return and line feed characters are now stripped
+      from the whole URL, including the host (#301).
+
+  Additionally, :func:`~w3lib.url.safe_url_string` now adds a ``/`` path to a
+  URL that has a query but no path, since some HTTP clients otherwise send
+  the query alone as the request target (#297), and no longer raises
+  :exc:`UnicodeDecodeError` for a host that cannot be IDNA-encoded, such as
+  one with an empty label, when *encoding* is not UTF-8 (#319).
+
+- :func:`~w3lib.url.canonicalize_url` now resolves dot segments (``.`` and
+  ``..``) in the path and normalizes IPv6 addresses in the host, so that
+  equivalent URLs canonicalize the same (#308), and keeps percent-encoded
+  characters whose decoding would change their meaning, such as a semicolon
+  (``%3B``, a path parameter delimiter, #323) or a percent sign (``%25``,
+  which would otherwise decode to a bare ``%``, #306), in the path encoded.
+
+- :func:`~w3lib.url.canonicalize_url` no longer IDNA-encodes the userinfo of a
+  URL together with its host, which changed both, e.g.
+  ``http://user@éxample.com`` became ``http://xn--user@xample-fbb.com`` (#279).
+
+- ``w3lib.url.safe_download_url()`` now resolves percent-encoded dot segments,
+  such as ``%2e`` or ``%2e%2e``, like ``.`` and ``..`` (#320), and decides
+  whether the path keeps its trailing ``/`` based on the path alone, rather
+  than on whether the whole URL ends with ``/`` (#311).
+
+- :func:`~w3lib.url.url_query_parameter` now accepts a ``bytes`` URL, instead
+  of parsing its ``b'…'`` representation (#325), and
+  :func:`~w3lib.url.url_query_cleaner` accepts one as well, instead of
+  raising :exc:`TypeError`, while the type hint of its *parameterlist*
+  argument no longer claims to accept ``bytes`` items, which never matched
+  anything (#257, #326).
+
+- :func:`~w3lib.url.path_to_file_uri` and :func:`~w3lib.url.file_uri_to_path`
+  now round-trip Windows UNC paths, ``\\server\share\file`` becoming
+  ``file://server/share/file`` (#324), and :func:`~w3lib.url.file_uri_to_path`
+  no longer raises for a path that starts with an extra pair of slashes, such
+  as ``////foo/bar`` (#327).
+
+- Fixed excessive backtracking on malformed input, which could be used for
+  denial of service, in :func:`~w3lib.html.get_base_url` (#264),
+  :func:`~w3lib.html.get_meta_refresh` (#266, #288),
+  :func:`~w3lib.html.remove_tags_with_content` (#271),
+  :func:`~w3lib.html.replace_tags` and :func:`~w3lib.html.remove_tags` (#268,
+  #286), and :func:`~w3lib.html.unquote_markup` on unclosed CDATA sections
+  (#289).
+
+- :func:`~w3lib.html.get_base_url` no longer picks up a ``<base>`` tag
+  written as text inside ``<script>`` or ``<noscript>``, where a browser
+  would ignore it, or one broken by a comment, such as
+  ``<base h<!--c-->ref="…">``, which a browser does not read as a tag at all
+  (#303).
+
+- :func:`~w3lib.html.get_base_url` now reads only the first ``href`` attribute
+  of the ``<base>`` tag, as browsers do, instead of the last attribute whose
+  name ends in ``href``, such as ``data-href``, and now also reads an unquoted
+  ``href`` value (#349).
+
+- :func:`~w3lib.html.get_meta_refresh` and
+  :func:`~w3lib.html.remove_tags_with_content` no longer treat a ``<script>``
+  or ``<noscript>`` element as closed only by a bare ``</script>``, now also
+  recognizing a closing tag followed by whitespace, ``/`` or another token
+  (#302).
+
+- :func:`~w3lib.url.parse_data_uri` no longer raises on an empty quoted
+  parameter value, such as ``charset=""`` (#310).
+
+- :func:`~w3lib.html.replace_entities` and :func:`~w3lib.html.get_meta_refresh`
+  now only treat ASCII digits as numeric character references and refresh
+  intervals, matching browsers (#292).
+
+- :func:`~w3lib.html.replace_entities` now resolves a null or surrogate
+  numeric character reference, such as ``&#0;`` or ``&#xD800;``, to U+FFFD,
+  as browsers do, instead of producing a NUL or a lone surrogate that cannot
+  be encoded (#321).
+
+- :func:`~w3lib.encoding.resolve_encoding`, and with it every function that
+  detects the encoding of a response, no longer resolves UTF-7, which
+  browsers do not support and which lets ASCII-only bytes smuggle markup
+  past filters (#307).
+
+- :func:`~w3lib.encoding.http_content_type_encoding` now recognizes a quoted
+  ``charset`` parameter value, and no longer stops matching a valid
+  ``charset`` because of what follows it or of a quoted-string parameter
+  value that itself contains ``charset`` (#291, #293).
+
+- :func:`~w3lib.encoding.html_body_declared_encoding` now skips HTML
+  comments, like :func:`~w3lib.html.get_base_url` and
+  :func:`~w3lib.html.get_meta_refresh` already did (#305), and finds a
+  charset declaration regardless of the order of the attributes in the tag,
+  of how the ``http-equiv`` pragma is spelled, e.g.
+  ``httpequiv="ContentType"``, and of what surrounds ``charset=`` within a
+  ``content`` attribute value (#299, #337).
+
+- :func:`~w3lib.encoding.html_to_unicode` now decodes a lead ``0x80`` byte as
+  the euro sign when the encoding is GB18030, matching the WHATWG Encoding
+  Standard (#300), and decodes a BOM-less ``utf-16`` or ``utf-32`` encoding
+  declared in the body or auto-detected as big-endian, as it already did for
+  one declared in the ``Content-Type`` header (#317).
+
+- :func:`~w3lib.html.replace_tags`, :func:`~w3lib.html.remove_tags` and
+  :func:`~w3lib.html.remove_tags_with_content` no longer end a tag at an
+  angle bracket inside a quoted attribute value, such as the ``>`` of
+  ``<img alt="a>b" src=x>`` (#343).
+
+- :func:`~w3lib.html.replace_entities` and :func:`~w3lib.html.unquote_markup`
+  no longer consume *keep* when it is an iterator, such as a generator, which
+  left some entities unkept (#342, #345), and :func:`~w3lib.html.remove_tags`
+  no longer raises :exc:`ValueError` when *which_ones* or *keep* is an empty
+  iterator and the other one is not (#345).
+
+- :func:`~w3lib.html.get_meta_refresh` no longer reports a redirect for a
+  refresh ``content`` value that browsers do not follow because it uses
+  non-ASCII whitespace, such as U+00A0 (#353).
+
+- :func:`~w3lib.html.get_meta_refresh` no longer prints the HTML content it
+  was given to stdout when a :exc:`UnicodeDecodeError` is raised (#256).
+
+- Tests, benchmarking and CI improvements (#247, #259, #262, #281, #296,
+  #304, #313, #314, #329, #335, #340, #344, #350).
+
+2.4.1 (2026-03-20)
+------------------
+
+- :func:`~w3lib.url.safe_url_string` now preserves IPv6 brackets in the URL
+  netloc (#253).
+
+2.4.0 (2026-01-29)
+------------------
+
+- Dropped support for Python 3.9 and PyPy 3.10 (#250).
+
+- Added support for Python 3.14 and PyPy 3.11 (#241, #245).
+
+- Improved performance of :func:`~w3lib.http.headers_raw_to_dict` and
+  :func:`~w3lib.http.headers_dict_to_raw` (#246).
+
+- Switched the build system to ``hatchling`` (#243).
+
+- The obsolete ``sphinx-hoverxref`` extension is no longer used to build the
+  docs (#244).
+
+- Tests and CI improvements (#237, #238, #240, #242, #248, #251).
+
+2.3.1 (2025-01-27)
+------------------
+
+- Fix a merge error, no code changes.
+
+2.3.0 (2025-01-27)
+------------------
+
+- Dropped Python 3.8 support (#232).
+
+- Removed the following functions, deprecated in 2.0.0:
+
+    - ``w3lib.util.str_to_unicode``
+    - ``w3lib.util.to_native_str``
+    - ``w3lib.util.unicode_to_str``
+
+  (#235).
+
+- Added Python 3.13 support (#232).
+
+- Fixed running tests with newer point releases of Python 3.10 and 3.11 (#233).
+
+- Cleanup and CI improvements (#232, #234).
+
+2.2.1 (2024-06-12)
+------------------
+
+- :func:`~w3lib.url.canonicalize_url` no longer applies lowercase to the
+  userinfo URL component. (#229, #230)
+
+2.2.0 (2024-06-05)
+------------------
+
+- Dropped Python 3.7 support (#214).
+
+- Added Python 3.12 and PyPy 3.10 support (#218).
+
+- Added the description to the package metadata (#227).
+
+- Improved type hints (#226).
+
+- Added ``.readthedocs.yml`` (#219).
+
+- Updated the intersphinx URLs (#224).
+
+- Added the ``pre-commit`` configuration, code reformatted with ``black``
+  (#220).
+
+- Updated CI configuration (#217, #227).
+
+2.1.2 (2023-08-03)
+------------------
+
+- Fix test failures on Python 3.11.4+ (#212, #213).
+- Fix an incorrect type hint (#211).
+- Add project URLs to setup.py (#215).
+
+2.1.1 (2022-12-09)
+------------------
+
+- :func:`~w3lib.url.safe_url_string`, ``w3lib.url.safe_download_url()`` and
+  :func:`~w3lib.url.canonicalize_url` now strip whitespace and control
+  characters urls according to the URL living standard.
+
+
+2.1.0 (2022-11-28)
+------------------
+
+-   Dropped Python 3.6 support, and made Python 3.11 support official. (#195,
+    #200)
+
+-   :func:`~w3lib.url.safe_url_string` now generates safer URLs.
+
+    To make URLs safer for the `URL living standard`_:
+
+    .. _URL living standard: https://url.spec.whatwg.org/
+
+    -   ``;=`` are percent-encoded in the URL username.
+
+    -   ``;:=`` are percent-encoded in the URL password.
+
+    -   ``'`` is percent-encoded in the URL query if the URL scheme is `special
+        <https://url.spec.whatwg.org/#special-scheme>`__.
+
+    To make URLs safer for `RFC 2396`_ and `RFC 3986`_, ``|[]`` are
+    percent-encoded in URL paths, queries, and fragments.
+
+    .. _RFC 2396: https://www.ietf.org/rfc/rfc2396.txt
+    .. _RFC 3986: https://www.ietf.org/rfc/rfc3986.txt
+
+    (#80, #203)
+
+-   :func:`~w3lib.encoding.html_to_unicode` now checks for the `byte order
+    mark`_ before inspecting the ``Content-Type`` header when determining the
+    content encoding, in line with the `URL living standard`_. (#189, #191)
+
+    .. _byte order mark: https://en.wikipedia.org/wiki/Byte_order_mark
+
+-   :func:`~w3lib.url.canonicalize_url` now strips spaces from the input URL,
+    to be more in line with the `URL living standard`_. (#132, #136)
+
+-   :func:`~w3lib.html.get_base_url` now ignores HTML comments. (#70, #77)
+
+-   Fixed :func:`~w3lib.url.safe_url_string` re-encoding percent signs on
+    the URL username and password even when they were being used as part of an
+    escape sequence. (#187, #196)
+
+-   Fixed :func:`~w3lib.http.basic_auth_header` using the wrong flavor of
+    base64 encoding, which could prevent authentication in rare cases. (#181,
+    #192)
+
+-   Fixed :func:`~w3lib.html.replace_entities` raising :exc:`OverflowError` in
+    some cases due to `a bug in CPython
+    <https://github.com/python/cpython/issues/76763>`__. (#199, #202)
+
+-   Improved typing and fixed typing issues. (#190, #206)
+
+-   Made CI and test improvements. (#197, #198)
+
+-   Adopted a Code of Conduct. (#194)
+
+
+2.0.1 (2022-08-11)
+------------------
+Minor documentation fix (release date is set in the changelog).
+
+2.0.0 (2022-08-11)
+------------------
+
+Backwards incompatible changes:
+
+- Python 2 is no longer supported; Python 3.6+ is required now (#168, #175).
+- :func:`w3lib.url.safe_url_string` and :func:`w3lib.url.canonicalize_url`
+  no longer convert "%23" to "#" when it appears in the URL path. This is a bug
+  fix. It's listed as a backward-incomatible change because in some cases the
+  output of :func:`w3lib.url.canonicalize_url` is going to change, and so, if
+  this output is used to generate URL fingerprints, new fingerprints might be
+  incompatible with those created with the previous w3lib versions
+  (#141).
+
+Deprecation removals (#169):
+
+- The ``w3lib.form`` module is removed.
+- The ``w3lib.html.remove_entities`` function is removed.
+- The ``w3lib.url.urljoin_rfc`` function is removed.
+
+The following functions are deprecated, and will be removed in future releases
+(#170):
+
+- ``w3lib.util.str_to_unicode``
+- ``w3lib.util.unicode_to_str``
+- ``w3lib.util.to_native_str``
+
+Other improvements and bug fixes:
+
+- Type annotations are added (#172, #184).
+- Added support for Python 3.9 and 3.10 (#168, #176).
+- Fixed :func:`w3lib.html.get_meta_refresh` for ``<meta>`` tags where
+  ``http-equiv`` is written after ``content`` (#179).
+- Fixed :func:`w3lib.url.safe_url_string` for IDNA domains with ports (#174).
+- :func:`w3lib.url.url_query_cleaner` no longer adds an unneeded ``#`` when
+  ``keep_fragments=True`` is passed, and the URL doesn't have a fragment
+  (#159).
+- Removed a workaround for an ancient pathname2url bug (#142)
+- CI is migrated to GitHub Actions (#166, #177); other CI improvements (#160,
+  #182).
+- The code is formatted using black (#173).
+
+1.22.0 (2020-05-13)
+-------------------
+
+- Python 3.4 is no longer supported (issue #156)
+- :func:`w3lib.url.safe_url_string` now supports an optional ``quote_path``
+  parameter to disable the percent-encoding of the URL path (issue #119)
+- :func:`w3lib.url.add_or_replace_parameter` and
+  :func:`w3lib.url.add_or_replace_parameters` no longer remove duplicate
+  parameters from the original query string that are not being added or
+  replaced (issue #126)
+- :func:`w3lib.html.remove_tags` now raises a :exc:`ValueError` exception
+  instead of :exc:`AssertionError` when using both the ``which_ones`` and the
+  ``keep`` parameters (issue #154)
+- Test improvements (issues #143, #146, #148, #149)
+- Documentation improvements (issues #140, #144, #145, #151, #152, #153)
+- Code cleanup (issue #139)
+
+
+1.21.0 (2019-08-09)
+-------------------
+
+- Add the ``encoding`` and ``path_encoding`` parameters to
+  ``w3lib.url.safe_download_url()`` (issue #118)
+- :func:`w3lib.url.safe_url_string` now also removes tabs and new lines
+  (issue #133)
+- :func:`w3lib.html.remove_comments` now also removes truncated comments
+  (issue #129)
+- :func:`w3lib.html.remove_tags_with_content` no longer removes tags which
+  start with the same text as one of the specified tags (issue #114)
+- Recommend pytest instead of nose to run tests (issue #124)
+
+
+1.20.0 (2019-01-11)
+-------------------
+
+- Fix url_query_cleaner to do not append "?" to urls without a query string (issue #109)
+- Add support for Python 3.7 and drop Python 3.3 (issue #113)
+- Add `w3lib.url.add_or_replace_parameters` helper (issue #117)
+- Documentation fixes (issue #115)
+
+
+1.19.0 (2018-01-25)
+-------------------
+
+- Add a workaround for CPython segfault (https://bugs.python.org/issue32583)
+  which affect w3lib.encoding functions. This is technically **backwards
+  incompatible** because it changes the way non-decodable bytes are replaced
+  (in some cases instead of two ``\ufffd`` chars you can get one).
+  As a side effect, the fix speeds up decoding in Python 3.4+.
+- Add 'encoding' parameter for w3lib.http.basic_auth_header.
+- Fix pypy testing setup, add pypy3 to CI.
+
+
+1.18.0 (2017-08-03)
+-------------------
+
+- Include additional assets used for distribution packages in the source tarball
+- Consider ``[`` and ``]`` as safe characters in path and query components
+  of URLs, i.e. they are not escaped anymore
+- Disable codecov project coverage check
+
+
+1.17.0 (2017-02-08)
+-------------------
+
+- Add Python 3.5 and 3.6 support
+- Add ``w3lib.url.parse_data_uri`` helper for parsing "data:" URIs
+- Add ``w3lib.html.strip_html5_whitespace`` function to strip leading and
+  trailing whitespace as per W3C recommendations, e.g. for cleaning
+  "href" attribute values
+- Fix ``w3lib.http.headers_raw_to_dict`` for multiple headers with same name
+- Do not distribute tests/test_*.pyc artifacts
+
+
+1.16.0 (2016-11-10)
+-------------------
+
+- ``canonicalize_url()`` and ``safe_url_string()``:
+  strip ":" when no port is specified (as per `RFC 3986`_;
+  see also https://github.com/scrapy/scrapy/issues/2377)
+- ``url_query_cleaner()``: support new ``keep_fragments`` argument
+  (defaulting to ``False``)
+
+1.15.0 (2016-07-29)
+-------------------
+
+- Add ``canonicalize_url()`` to ``w3lib.url``
+
+1.14.3 (2016-07-14)
+-------------------
+
+Bugfix release:
+
+- Handle IDNA encoding failures in ``safe_url_string()`` (issue #62)
+
+1.14.2 (2016-04-11)
+-------------------
+
+Bugfix release:
+
+- fix function import for (deprecated) ``urljoin_rfc`` (issue #51)
+- only expose wanted functions from ``w3lib.url``, via ``__all__``
+  (see issue #54, https://github.com/scrapy/scrapy/issues/1917)
+
+1.14.1 (2016-04-07)
+-------------------
+
+Bugfix release:
+
+- For bytes URLs, when supplied encoding (or default UTF8) is wrong,
+  ``safe_url_string`` falls back to percent-encoding offending bytes.
+
+1.14.0 (2016-04-06)
+-------------------
+
+Changes to safe_url_string:
+
+- proper handling of non-ASCII characters in Python2 and Python3
+- support IDNs
+- new `path_encoding` to override default UTF-8 when serializing non-ASCII
+  characters before percent-encoding
+
+html_body_declared_encoding also detects encoding when not sole attribute
+in ``<meta>``.
+
+Package is now properly marked as ``zip_safe``.
+
+1.13.0 (2015-11-05)
+-------------------
+
+- remove_tags removes uppercase tags as well;
+- ignore meta-redirects inside script or noscript tags by default,
+  but add an option to not ignore them;
+- replace_entities now handles entities without trailing semicolon;
+- fixed uncaught UnicodeDecodeError when decoding entities.
+
+1.12.0 (2015-06-29)
+-------------------
+
+- meta_refresh regex now handles leading newlines and whitespaces in the url;
+- include tests folder in source distribution.
+
+1.11.0 (2015-01-13)
+-------------------
+
+- url_query_cleaner now supports str or list parameters;
+- add support for resolving base URLs in <base> tags with attributes
+  before href.
+
+1.10.0 (2014-08-20)
+-------------------
+
+- reverted all 1.9.0 changes.
+
+1.9.0 (2014-08-16)
+------------------
+
+- all url-related functions accept bytes and unicode and now return bytes.
+
+1.8.1 (2014-08-14)
+------------------
+
+- w3lib.http.basic_auth_header now returns bytes
+
+1.8.0 (2014-07-31)
+------------------
+
+- add support for big5-hkscs encoding.
+
+1.7.1 (2014-07-26)
+------------------
+
+- PY3 fixed headers_raw_to_dict and headers_dict_to_raw;
+- documentation improvements;
+- provide wheels.
+
+1.6 (2014-06-03)
+----------------
+
+- w3lib.form.encode_multipart is deprecated;
+- docstrings and docs are improved;
+- w3lib.url.add_or_replace_parameter is re-implemented on top of
+  stdlib functions;
+- remove_entities is renamed to replace_entities.
+
+1.5 (2013-11-09)
+----------------
+
+- Python 2.6 support is dropped.
+
+1.4 (2013-10-18)
+----------------
+
+- Python 3 support;
+- get_meta_refresh encoding handling is fixed;
+- check for '?' in add_or_replace_parameter;
+- ISO-8859-1 is used for HTTP Basic Auth;
+- fixed unicode handling in replace_escape_chars;
+
+1.3 (2012-05-13)
+----------------
+
+- support non-standard gb_2312_80 encoding;
+- drop Python 2.5 support.
+
+1.2 (2012-05-02)
+----------------
+
+- Detect encoding for content attr before http-equiv in meta tag.
+
+1.1 (2012-04-18)
+----------------
+
+- w3lib.html.remove_comments handles multiline comments;
+- Added w3lib.encoding module, containing functions for working with character
+  encoding, like encoding autodetection from HTML pages.
+- w3lib.url.urljoin_rfc is deprecated.
+
+1.0 (2011-04-17)
+----------------
+
+First release of w3lib.
