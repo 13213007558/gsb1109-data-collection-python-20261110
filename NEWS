@@ -1,6 +1,15 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+---------------
+(unreleased)
+
+* Added ``HandlePriorityQueue``, a priority queue that returns a task handle
+  per pushed item and supports adjusting the priority of a task, cancelling
+  it, and querying its status through that handle, with optional persistence
+  of the queue state through ``close()``
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

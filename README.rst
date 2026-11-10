@@ -121,6 +121,58 @@ And use it::
     >>> pq.pop()
     b'a'
 
+HandlePriorityQueue
+===================
+
+A priority queue that tracks every task individually. ``push()`` returns an
+opaque ``TaskHandle`` that can later be used to adjust the priority of the
+task, cancel it, or query its status, without popping and re-pushing the
+other tasks::
+
+    >>> from queuelib import HandlePriorityQueue
+    >>> q = HandlePriorityQueue()
+    >>> handle_a = q.push('a', 5)
+    >>> handle_b = q.push('b', 5)
+    >>> q.adjust(handle_b, 0)   # move 'b' ahead of everything at priority 5
+    >>> q.pop()
+    'b'
+    >>> q.cancel(handle_a)
+    >>> q.status(handle_a)
+    <TaskStatus.CANCELLED: 'cancelled'>
+    >>> q.pop() is None
+    True
+
+Tasks with the same priority are dequeued in the order they were first
+enqueued. Adjusting the priority of a task moves it behind the tasks already
+waiting at the target priority, and adjusting it to its current priority
+leaves its position untouched, so the dequeue order is fully deterministic
+no matter how many times tasks are re-prioritized.
+
+``adjust_many(handles, priority)`` adjusts a batch of tasks with an
+all-or-nothing policy: if any handle in the batch is invalid, nothing is
+changed and ``InvalidHandleError`` is raised.
+
+Handles of tasks that were cancelled, dequeued or cleared become stale:
+using them raises ``InvalidHandleError`` and never affects tasks enqueued
+afterwards. Handles are logical tokens, not storage locations, and they can
+be pickled.
+
+Passing a path makes the queue persistent: ``close()`` writes the whole
+queue state to that path, and creating a new instance with the same path
+resumes the queue with every handle still valid::
+
+    >>> from queuelib import HandlePriorityQueue
+    >>> q = HandlePriorityQueue('queue-state')
+    >>> handle = q.push('a', 5)
+    >>> q.close()
+    >>> q = HandlePriorityQueue('queue-state')
+    >>> q.adjust(handle, 0)
+    >>> q.pop()
+    'a'
+
+Payloads must be picklable when a path is used. Without a path, payloads of
+any type are accepted and nothing is persisted.
+
 RoundRobinQueue
 ===============
 
