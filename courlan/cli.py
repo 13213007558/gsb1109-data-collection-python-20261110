@@ -3,6 +3,7 @@ Implements a basic command-line interface.
 """
 
 import argparse
+import json
 import logging
 import os
 import stat
@@ -15,7 +16,7 @@ from itertools import islice
 from typing import IO
 
 from .core import check_url
-from .sampling import _make_sample
+from .sampling import _make_sample, stratified_sample
 from .urlstore import UrlStore
 
 LOGGER = logging.getLogger(__name__)
@@ -104,18 +105,77 @@ def parse_args(args: Sequence[str] | None) -> argparse.Namespace:
         help="exclude domains with less than n URLs",
         type=partial(_int_at_least, minimum=0),
     )
+    group3.add_argument(
+        "--stratified-budget",
+        help="total number of URLs to select across site/path/source strata",
+        type=partial(_int_at_least, minimum=1),
+    )
+    group3.add_argument(
+        "--seed",
+        help="seed of the stratified draw, for reproducible samples (default: 0)",
+        type=partial(_int_at_least, minimum=0),
+        default=0,
+    )
+    group3.add_argument(
+        "--minimum",
+        help="minimum coverage attempted for every stratum (default: 0)",
+        type=partial(_int_at_least, minimum=0),
+        default=0,
+    )
+    group3.add_argument(
+        "--weights",
+        help="JSON file with relative budget shares: a list of "
+        '{"key": [site, category, source], "weight": n} objects',
+    )
+    group3.add_argument(
+        "--source-column",
+        help="read the source from the tab-separated second field of each line",
+        action="store_true",
+    )
+    group3.add_argument(
+        "--manifest",
+        help="write a rerunnable JSON manifest (per-stratum quotas and pools) here",
+    )
     parsed = argsparser.parse_args(args)
     if parsed.sample is None and (
         parsed.exclude_max is not None or parsed.exclude_min is not None
     ):
         argsparser.error("--exclude-max and --exclude-min require --sample")
+    stratified_options = (
+        parsed.minimum,
+        parsed.weights,
+        parsed.manifest,
+        parsed.source_column,
+    )
+    if parsed.stratified_budget is None and any(stratified_options):
+        argsparser.error(
+            "--minimum, --weights, --source-column and --manifest "
+            "require --stratified-budget"
+        )
+    if parsed.stratified_budget is not None:
+        if parsed.sample is not None:
+            argsparser.error("--stratified-budget cannot be used with --sample")
+        if (
+            parsed.parallel is not None
+            or parsed.redirects
+            or parsed.discardedfile is not None
+            or parsed.exclude_max is not None
+            or parsed.exclude_min is not None
+        ):
+            argsparser.error(
+                "-p, -r, -d and --exclude-* cannot be used with --stratified-budget"
+            )
     if parsed.sample is not None and (
         parsed.parallel is not None
         or parsed.redirects
         or parsed.discardedfile is not None
     ):
         argsparser.error("-p, -r and -d cannot be used with --sample")
-    for path in (parsed.outputfile, parsed.discardedfile):
+    for path in (
+        parsed.outputfile,
+        parsed.discardedfile,
+        parsed.manifest,
+    ):
         if path is not None and _same_path(parsed.inputfile, path):
             argsparser.error(f"output file is the input file: {path}")
     return parsed
@@ -202,6 +262,70 @@ def _cli_sample(args: argparse.Namespace) -> None:
             outputfh.write(url + "\n")
 
 
+def _load_weights(path: str) -> dict[tuple[str, str, str], int]:
+    "Read the optional JSON weights file into stratum-keyed integer weights."
+    try:
+        with open(path, encoding="utf-8") as weightsfh:
+            data = json.load(weightsfh)
+    except (OSError, json.JSONDecodeError) as err:
+        raise _CliError(f"cannot read weights file {path}: {err}") from err
+    if not isinstance(data, list):
+        raise _CliError("weights file must contain a JSON list")
+    weights: dict[tuple[str, str, str], int] = {}
+    for item in data:
+        try:
+            key = item["key"]
+            weight = item["weight"]
+            site, category, source = key
+        except (KeyError, TypeError, ValueError) as err:
+            raise _CliError(
+                'each weight needs "key": [site, category, source] and "weight"'
+            ) from err
+        if not isinstance(weight, int) or weight <= 0:
+            raise _CliError(f"weight for {key!r} must be a positive integer")
+        weights[(str(site), str(category), str(source))] = weight
+    return weights
+
+
+def _cli_stratified_sample(args: argparse.Namespace) -> None:
+    "Read the input as strata-aware records and write the stratified sample."
+    weights = _load_weights(args.weights) if args.weights else None
+    records: list[tuple[str, object]] = []
+    with _open(args.inputfile) as inputfh:
+        for batch in _batch_lines(inputfh, 10**5):
+            for line in batch:
+                if not _is_utf8(line):
+                    LOGGER.debug("skipped a line with invalid UTF-8")
+                    continue
+                if args.source_column:
+                    url, tab, source = line.partition("\t")
+                    records.append((url, source if tab else None))
+                else:
+                    records.append((line, None))
+    result = stratified_sample(
+        records,
+        budget=args.stratified_budget,
+        seed=args.seed,
+        minimum=args.minimum,
+        weights=weights,
+        strict=args.strict,
+        language=args.language,
+    )
+    # outputs last, so a read or computation failure does not truncate them
+    with _open(args.outputfile, "w") as outputfh:
+        for url in result.urls:
+            outputfh.write(url + "\n")
+    if args.manifest:
+        with _open(args.manifest, "w") as manifestfh:
+            json.dump(result.manifest, manifestfh, indent=2, sort_keys=True)
+            manifestfh.write("\n")
+    for note in result.notes:
+        LOGGER.warning("%s", note)
+    for key, stratum_reasons in result.reasons.items():
+        for reason in stratum_reasons:
+            LOGGER.warning("%s: %s", "/".join(key), reason)
+
+
 def _cli_process(args: argparse.Namespace) -> None:
     "Read input file bit by bit and process URLs in batches."
     with ExitStack() as stack:
@@ -258,7 +382,9 @@ def _cli_process(args: argparse.Namespace) -> None:
 
 def process_args(args: argparse.Namespace) -> None:
     """Start processing according to the arguments"""
-    if args.sample is not None:
+    if args.stratified_budget is not None:
+        _cli_stratified_sample(args)
+    elif args.sample is not None:
         _cli_sample(args)
     else:
         _cli_process(args)

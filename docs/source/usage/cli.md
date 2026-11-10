@@ -21,11 +21,18 @@ courlan -i INPUTFILE -o OUTPUTFILE [options]
 | `--sample N` | Sample N URLs per domain instead of full processing |
 | `--exclude-min N` | Skip domains with fewer than N URLs (sampling only) |
 | `--exclude-max N` | Skip domains with more than N URLs (sampling only) |
+| `--stratified-budget N` | Select N URLs in total, allocated across site/path/source strata |
+| `--seed N` | Seed of the stratified draw, for reproducible samples (default: 0) |
+| `--minimum N` | Minimum coverage attempted for every stratum (default: 0) |
+| `--weights FILE` | JSON file with relative budget shares per stratum |
+| `--source-column` | Read each source from the tab-separated second field |
+| `--manifest FILE` | Write a rerunnable JSON manifest with per-stratum quotas |
 
 ## Behavior
 
 - **Batch mode** (default): processes all URLs, writes accepted URLs to `--outputfile` and rejected ones to `--discardedfile` if specified. Parallelism controlled by `-p`.
 - **Sampling mode** (`--sample`): samples N URLs per domain. Only `-i`, `-o`, `--strict`, `-l`, `-v` and the `--exclude-*` bounds apply. `-p`, `-r` and `-d` are rejected. `--exclude-*` without `--sample` is rejected too, and `-p` and `--sample` take positive integers.
+- **Stratified mode** (`--stratified-budget`): selects at most N URLs in total, split across site/path/source strata with `--minimum` floors, optional `--weights`, a `--seed` for reproducible draws and a `--manifest` for per-stratum quotas. It cannot be combined with `--sample`, `-p`, `-r`, `-d` or `--exclude-*`. If every stratum is smaller than the budget, the output is shorter than requested and a warning explains the unused slots.
 - **Input**: UTF-8 with or without BOM. Blank lines are skipped. Lines with invalid UTF-8 go to `--discardedfile` in batch mode. In sampling mode they are skipped, and `-v` logs their count. The run is refused if an output file is the input file, or if `--outputfile` and `--discardedfile` are the same file. Unreadable or unwritable files end the run with an error and exit code 2. If the output is piped to a reader that stops early, such as `-o /dev/stdout | head`, the run ends quietly with exit code 141.
 
 ## Examples
@@ -106,6 +113,27 @@ https://example.com/page1
 https://example.com/page2
 ```
 :::
+
+### Stratified sampling with a total budget
+
+Protect small sites and keep a minimum per stratum while selecting only 500 URLs:
+
+```bash
+courlan -i large_urls.txt -o trial.txt \
+  --stratified-budget 500 --seed 42 --minimum 5 --manifest manifest.json
+```
+
+The manifest reports the quota, pool size and selected count for every
+`(site, category, source)` stratum, along with reasons whenever a minimum or
+the global budget could not be met. Inputs carrying an explicit source use a
+tab-separated second field with `--source-column`; `--weights weights.json`
+steers the remaining budget toward chosen strata:
+
+```json
+[
+  {"key": ["https://small.example", "news", "unknown"], "weight": 1000}
+]
+```
 
 ## Large inputs
 

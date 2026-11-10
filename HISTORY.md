@@ -1,6 +1,14 @@
 # History / Changelog
 
 
+## Unreleased
+
+- `stratified_sample()`: allocate a total URL budget across site/path-category/source strata, with per-stratum minimum coverage, relative weights, feasible quotas and constraint reasons
+- order-independent and batch-stable seeded draws; adding URLs no longer reshuffles existing selections
+- `resample_stratified()` and a rerunnable JSON manifest, including per-stratum pool sizes, quotas and selected counts
+- CLI: `--stratified-budget`, `--seed`, `--minimum`, `--weights`, `--source-column` and `--manifest`
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)

@@ -20,7 +20,15 @@ from .filters import (
     lang_filter,
     validate_url,
 )
-from .sampling import sample_urls
+from .sampling import (
+    StratifiedResult,
+    Stratum,
+    StratumKey,
+    path_category,
+    resample_stratified,
+    sample_urls,
+    stratified_sample,
+)
 from .urlstore import UrlStore, load_store
 from .urlutils import (
     extract_domain,
@@ -46,6 +54,12 @@ __all__ = [
     "lang_filter",
     "validate_url",
     "sample_urls",
+    "stratified_sample",
+    "resample_stratified",
+    "path_category",
+    "StratifiedResult",
+    "Stratum",
+    "StratumKey",
     "UrlStore",
     "load_store",
     "extract_domain",

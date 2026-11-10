@@ -256,6 +256,83 @@ logging.getLogger("courlan.sampling").setLevel(logging.INFO)
 See also `courlan --sample` in the [CLI reference](cli.md).
 
 
+## Stratified sampling under a total budget
+
+`sample_urls` draws the same fixed number per domain, so a site with millions of
+links can still dominate a trial-crawl budget. `stratified_sample` instead
+splits one global **budget** across strata defined by **site, path category and
+source**, and can guarantee a minimum coverage for every stratum.
+
+```python
+from courlan import stratified_sample
+
+urls = [
+    "https://big.example/news/1",
+    "https://big.example/shop/2",
+    "https://small.example/news/1",
+]
+result = stratified_sample(urls, budget=2, seed=42, minimum=1)
+result.urls              # the selected URLs
+result.quotas            # planned quota per (site, category, source)
+result.selected_counts   # URLs actually selected per stratum
+result.reasons           # why a constraint could not be met
+result.notes             # run-level messages, e.g. an unused budget
+```
+
+The default path category is the first path segment (`path_category`); pass a
+custom `category_fn` to change it. Sources come from `(url, source)` pairs or
+from a `source_fn`; URLs without a source land in the `"unknown"` stratum.
+
+### Fair allocation and honest quotas
+
+Each stratum first receives up to `minimum` URLs, then the rest of the budget
+is shared proportionally to the pool sizes (or to explicit `weights`).
+Quotas are always capped by the available URLs, so the result **never exceeds
+the budget**. When a minimum cannot be honored, the stratum gets the feasible
+quota and `reasons` explains whether the pool or the budget was the limit:
+
+```python
+result = stratified_sample(small_site_urls, budget=5, minimum=10)
+result.total_selected          # 3, not 5 or 10
+result.reasons                 # {'(…)': ['minimum 10 reduced to 3: only 3 URL(s) available']}
+```
+
+Relative weights steer the remaining budget toward selected strata:
+
+```python
+weights = {("https://small.example", "news", "unknown"): 1000}
+stratified_sample(urls, budget=10, weights=weights)
+```
+
+### Reproducibility and incremental imports
+
+The draw is based on seed-derived hashes of the normalized URLs rather than
+input positions. Consequently:
+
+- the same input **set** and `seed` give the same sample regardless of order;
+- splitting the input into batches does not change the result;
+- adding a few URLs only replaces a boundary item, it never reshuffles the
+  whole selection, so incremental imports stay stable.
+
+### Rerunnable manifest
+
+`result.manifest` is plain JSON-serializable data with every candidate URL, the
+pool size, quota and selected count per stratum, plus the seed and weights.
+Replay it with `resample_stratified`, optionally with a new seed or budget:
+
+```python
+import json
+from courlan import resample_stratified
+
+same = resample_stratified(result.manifest)
+redrawn = resample_stratified(result.manifest, seed=7)
+resized = resample_stratified(result.manifest, budget=100)
+```
+
+See also `--stratified-budget` in the [CLI reference](cli.md).
+
+
+
 ## Scope and crawlability checks
 
 Determine if a link leads to another host:

@@ -2,6 +2,7 @@
 Unit tests for the courlan package: the command-line interface and sampling.
 """
 
+import json
 import logging
 import os
 import signal
@@ -425,3 +426,225 @@ def test_sample(caplog):
             assert logger.level == logging.INFO
         records = [r for r in caplog.records if "discarded" in r.message]
         assert records and {r.levelname for r in records} == {expected}
+
+
+def _write_stratified_input(path):
+    "A large site and a small one, in two path categories."
+    big = [
+        f"https://big.example/{'news' if i % 2 else 'shop'}/p{i}" for i in range(120)
+    ]
+    small = [f"https://small.example/news/a{i}" for i in range(3)]
+    path.write_text("\n".join(big + small) + "\n", encoding="utf-8")
+    return big, small
+
+
+def test_cli_stratified_basic(tmp_path):
+    """the stratified flag routes through the new sampler and protects small sites"""
+    inputfile = tmp_path / "input.txt"
+    _, small = _write_stratified_input(inputfile)
+    outputfile = tmp_path / "sample.txt"
+    testargs = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(outputfile),
+        "--stratified-budget",
+        "20",
+        "--seed",
+        "7",
+        "--minimum",
+        "2",
+    ]
+    cli.process_args(cli.parse_args(testargs))
+    selected = outputfile.read_text(encoding="utf-8").splitlines()
+    assert len(selected) == 20
+    assert len(selected) == len(set(selected))
+    # the small site would be crowded out without the minimum
+    assert sum(url.startswith("https://small.example/") for url in selected) == 2
+    assert all(url.startswith("https://") for url in selected)
+
+
+def test_cli_stratified_reproducible_and_manifest(tmp_path):
+    """same seed reproduces the run, and the manifest stores per-stratum counts"""
+    inputfile = tmp_path / "input.txt"
+    _write_stratified_input(inputfile)
+    first, second, manifest = (
+        tmp_path / "first.txt",
+        tmp_path / "second.txt",
+        tmp_path / "manifest.json",
+    )
+    base = [
+        "-i",
+        str(inputfile),
+        "--stratified-budget",
+        "15",
+        "--seed",
+        "11",
+        "--minimum",
+        "1",
+        "--manifest",
+        str(manifest),
+    ]
+    cli.process_args(cli.parse_args([*base, "-o", str(first)]))
+    cli.process_args(cli.parse_args([*base, "-o", str(second)]))
+    assert first.read_text(encoding="utf-8") == second.read_text(encoding="utf-8")
+
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["courlan_sampling"] == "stratified"
+    assert data["seed"] == 11 and data["budget"] == 15
+    assert sum(entry["selected"] for entry in data["strata"]) == 15
+    for entry in data["strata"]:
+        assert entry["selected"] <= entry["quota"] <= entry["pool_size"]
+
+
+def test_cli_stratified_source_column(tmp_path):
+    """the second tab-separated field becomes the stratum source"""
+    inputfile = tmp_path / "input.txt"
+    inputfile.write_text(
+        "https://a.example/news/1\tsitemap\n"
+        "https://a.example/news/2\tcrawl\n"
+        "https://a.example/news/3\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    testargs = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(tmp_path / "out.txt"),
+        "--stratified-budget",
+        "10",
+        "--source-column",
+        "--manifest",
+        str(manifest),
+    ]
+    cli.process_args(cli.parse_args(testargs))
+    sources = {entry["source"] for entry in json.loads(manifest.read_text())["strata"]}
+    assert sources == {"sitemap", "crawl", "unknown"}
+
+
+def test_cli_stratified_weights(tmp_path):
+    """a weights file shifts the budget toward the weighted stratum"""
+    inputfile = tmp_path / "input.txt"
+    _write_stratified_input(inputfile)
+    weights = tmp_path / "weights.json"
+    weights.write_text(
+        json.dumps(
+            [{"key": ["https://small.example", "news", "unknown"], "weight": 1000}]
+        ),
+        encoding="utf-8",
+    )
+    outputfile = tmp_path / "out.txt"
+    testargs = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(outputfile),
+        "--stratified-budget",
+        "10",
+        "--seed",
+        "3",
+        "--weights",
+        str(weights),
+    ]
+    cli.process_args(cli.parse_args(testargs))
+    selected = outputfile.read_text(encoding="utf-8").splitlines()
+    # the small stratum only has three URLs, and the high weight fills all of them
+    assert sum(url.startswith("https://small.example/") for url in selected) == 3
+
+
+def test_cli_stratified_underfill_warns(tmp_path, caplog):
+    """a budget above the pool size never overshoots and is reported"""
+    inputfile = tmp_path / "input.txt"
+    inputfile.write_text("https://a.example/news/1\nhttps://a.example/news/2\n")
+    outputfile = tmp_path / "out.txt"
+    testargs = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(outputfile),
+        "--stratified-budget",
+        "50",
+    ]
+    with caplog.at_level(logging.WARNING, logger="courlan.cli"):
+        cli.process_args(cli.parse_args(testargs))
+    assert len(outputfile.read_text(encoding="utf-8").splitlines()) == 2
+    assert any("not fully used" in record.message for record in caplog.records)
+
+
+def test_cli_stratified_argument_conflicts(tmp_path, capsys):
+    """stratified options are validated like the existing sampling options"""
+    inputfile = tmp_path / "input.txt"
+    inputfile.write_text("https://example.org/a\n")
+    base = ["-i", str(inputfile), "-o", str(tmp_path / "out.txt")]
+    invalid = [
+        [*base, "--stratified-budget", "0"],
+        [*base, "--stratified-budget", "5", "--sample", "1"],
+        [*base, "--stratified-budget", "5", "-p", "1"],
+        [*base, "--stratified-budget", "5", "-r"],
+        [*base, "--stratified-budget", "5", "-d", str(tmp_path / "d.txt")],
+        [*base, "--stratified-budget", "5", "--exclude-min", "1"],
+        [*base, "--minimum", "2"],
+        [*base, "--source-column"],
+        [*base, "--manifest", str(tmp_path / "m.json")],
+        [*base, "--stratified-budget", "5", "--manifest", str(inputfile)],
+    ]
+    for testargs in invalid:
+        with pytest.raises(SystemExit) as err:
+            cli.parse_args(testargs)
+        assert err.value.code == 2
+        assert capsys.readouterr().err
+
+
+def test_cli_stratified_bad_weights(tmp_path):
+    """an unreadable or malformed weights file ends in a CLI error"""
+    inputfile = tmp_path / "input.txt"
+    inputfile.write_text("https://example.org/a\n")
+    weights = tmp_path / "weights.json"
+    weights.write_text('[{"key": ["https://example.org", "x", "y"]}]', encoding="utf-8")
+    testargs = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(tmp_path / "out.txt"),
+        "--stratified-budget",
+        "5",
+        "--weights",
+        str(weights),
+    ]
+    with pytest.raises(cli._CliError):
+        cli.process_args(cli.parse_args(testargs))
+
+    missing = [
+        "-i",
+        str(inputfile),
+        "-o",
+        str(tmp_path / "out2.txt"),
+        "--stratified-budget",
+        "5",
+        "--weights",
+        str(tmp_path / "missing.json"),
+    ]
+    with pytest.raises(cli._CliError):
+        cli.process_args(cli.parse_args(missing))
+
+
+def test_cli_stratified_subprocess(tmp_path):
+    """the stratified mode also works through the actual entry point"""
+    inputfile = tmp_path / "input.txt"
+    _, _ = _write_stratified_input(inputfile)
+    outputfile = tmp_path / "out.txt"
+    result = run_cli(
+        "-i",
+        str(inputfile),
+        "-o",
+        str(outputfile),
+        "--stratified-budget",
+        "12",
+        "--seed",
+        "4",
+        "--minimum",
+        "1",
+    )
+    assert result.returncode == 0
+    assert len(outputfile.read_text(encoding="utf-8").splitlines()) == 12
