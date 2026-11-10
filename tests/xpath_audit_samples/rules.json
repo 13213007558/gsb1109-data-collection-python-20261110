@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "name": "title",
+      "old": "//h1[@class='title']/text()",
+      "new": "//h1[@class='title']/text()"
+    },
+    {
+      "name": "price",
+      "old": "//span[@class='price']/text()",
+      "new": "//div[@class='price-tag']/text()"
+    },
+    {
+      "name": "heading",
+      "old": "//h1[@class='title']",
+      "new": "//h1[@class='title']/text()"
+    },
+    {
+      "name": "nav_ordered",
+      "old": "//div[@class='menu']//a/text()",
+      "new": "//nav//a/text()",
+      "ordered": true
+    },
+    {
+      "name": "nav_unordered",
+      "old": "//div[@class='menu']//a/text()",
+      "new": "//nav//a/text()",
+      "ordered": false
+    },
+    {
+      "name": "products",
+      "old": "//ul[@class='products']/li/text()",
+      "new": "//ul[@class='products']/li[not(@class)]/text()"
+    }
+  ]
+}
