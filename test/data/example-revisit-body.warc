@@ -1,0 +1,17 @@
+WARC/1.0
+WARC-Record-ID: <urn:uuid:11111111-1111-1111-1111-111111111111>
+WARC-Date: 2026-01-01T00:00:00Z
+WARC-Type: response
+WARC-Target-URI: http://example.com/shared-body
+WARC-Payload-Digest: sha1:6LHKL3LA5KOAZYINUCQJOCIPPMDSJNXY
+WARC-Block-Digest: sha1:5YI3L7VMQ5BBWSWGBXUTX3FIF2ONQPGK
+Content-Type: application/http; msgtype=response
+Content-Length: 115
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 51
+
+<html><body>Shared body stored once</body></html>
+
+
