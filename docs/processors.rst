@@ -73,6 +73,54 @@ processors to populate the fields.
 Last, but not least, ``itemloaders`` comes with some :ref:`commonly used processors
 <built-in-processors>` built-in for convenience.
 
+.. _processor-contracts:
+
+Processor contracts
+-------------------
+
+A misconfigured processor chain (for example, a processor that expects a
+single string receiving the list of collected values) usually only fails once
+data flows through it, potentially after thousands of items. To catch such
+configuration errors up front, processors can declare a *contract*: the shape
+of value they accept (a single value or a sequence), the shape they may
+return, and the :ref:`Loader context <loaders-context>` keys they require::
+
+    from itemloaders.contracts import Shape, processor_contract
+
+    @processor_contract(accepts=Shape.SINGLE, returns=Shape.SINGLE,
+                        requires_context={"currency"})
+    def convert(value, loader_context=None):
+        return f"{value} {loader_context['currency']}"
+
+When an :class:`ItemLoader` is instantiated, the declared contracts of every
+effective processor chain — the default processors and, for each known field,
+the processors actually in use after field-level overrides — are checked
+statically, without calling any processor. If adjacent stages are definitely
+incompatible, or a required context key is missing,
+:class:`~itemloaders.contracts.ProcessorContractError` is raised before any
+data is loaded, pointing at the stages involved::
+
+    class MyLoader(ItemLoader):
+        name_out = Compose(TakeFirst(), Join())
+
+    MyLoader()
+    # ProcessorContractError: Processor contract mismatch in MyLoader:
+    # - field 'name': output processor (Compose) stage 1 (TakeFirst) returns
+    #   a single value, but field 'name': output processor (Compose) stage 2
+    #   (Join) expects a sequence
+
+Processors that declare no contract, including all processors written before
+this feature existed, keep working unchanged: they are treated as compatible
+with everything and reported as unknown. Use
+:meth:`ItemLoader.validate_processor_contracts` to get the full
+:class:`~itemloaders.contracts.ContractReport`, including the list of stages
+whose contract is unknown.
+
+The built-in processors declare their own contracts, and the contracts of
+:class:`~itemloaders.processors.Compose` and
+:class:`~itemloaders.processors.MapCompose` are derived from the contracts of
+their inner functions.
+
 .. _empty-values:
 
 Empty values

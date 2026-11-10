@@ -10,6 +10,7 @@ from collections import ChainMap
 from typing import TYPE_CHECKING, Any
 
 from itemloaders.common import wrap_loader_context
+from itemloaders.contracts import ProcessorContract, Shape
 from itemloaders.utils import arg_to_iter
 
 if TYPE_CHECKING:
@@ -59,6 +60,8 @@ class MapCompose:
 
     .. _`parsel selectors`: https://parsel.readthedocs.io/en/latest/parsel.html#parsel.selector.Selector.extract
     """
+
+    _contract_mode = "map"
 
     def __init__(self, *functions: Callable[..., Any], **default_loader_context: Any):
         self.functions = functions
@@ -117,6 +120,8 @@ class Compose:
     <itemloaders.ItemLoader.context>` attribute.
     """
 
+    _contract_mode = "chain"
+
     def __init__(self, *functions: Callable[..., Any], **default_loader_context: Any):
         self.functions = functions
         self.stop_on_none = default_loader_context.get("stop_on_none", True)
@@ -158,6 +163,10 @@ class TakeFirst:
     'one'
     """
 
+    __processor_contract__ = ProcessorContract(
+        accepts=Shape.SEQUENCE, returns=Shape.SINGLE
+    )
+
     def __call__(self, values: Any) -> Any:
         for value in values:
             if value is not None and value != "":
@@ -178,6 +187,8 @@ class Identity:
     >>> proc(['one', 'two', 'three'])
     ['one', 'two', 'three']
     """
+
+    __processor_contract__ = ProcessorContract(accepts=Shape.ANY, returns=Shape.ANY)
 
     def __call__(self, values: Any) -> Any:
         return values
@@ -213,6 +224,8 @@ class SelectJmes:
     ['bar']
     """
 
+    __processor_contract__ = ProcessorContract(accepts=Shape.SINGLE, returns=Shape.ANY)
+
     def __init__(self, json_path: str):
         self.json_path: str = json_path
         import jmespath.parser  # noqa: PLC0415
@@ -247,6 +260,10 @@ class Join:
     >>> proc(['one', 'two', 'three'])
     'one<br>two<br>three'
     """
+
+    __processor_contract__ = ProcessorContract(
+        accepts=Shape.SEQUENCE, returns=Shape.SINGLE
+    )
 
     def __init__(self, separator: str = " "):
         self.separator = separator

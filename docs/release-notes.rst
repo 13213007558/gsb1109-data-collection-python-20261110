@@ -5,6 +5,20 @@
 Release notes
 =============
 
+.. _release-unreleased:
+
+Unreleased
+----------
+
+-   Added optional :ref:`processor contracts <processor-contracts>`: processors
+    can declare the shape of values they accept and return, and the Loader
+    context keys they require. :class:`ItemLoader` now statically checks the
+    effective processor chains (default processors and field-level overrides)
+    when instantiated and raises
+    :class:`~itemloaders.contracts.ProcessorContractError` on definite
+    incompatibilities, before any data is loaded. Processors without a
+    declared contract keep working unchanged and are reported as unknown.
+
 .. _release-1.5.0:
 
 itemloaders 1.5.0 (2026-09-29)

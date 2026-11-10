@@ -14,6 +14,11 @@ from parsel import Selector  # noqa: TC002  # for sphinx
 from parsel.utils import extract_regex, flatten
 
 from itemloaders.common import wrap_loader_context
+from itemloaders.contracts import (
+    ContractReport,
+    ProcessorContractError,
+    validate_processor_chain,
+)
 from itemloaders.processors import Identity
 from itemloaders.utils import arg_to_iter
 
@@ -146,6 +151,73 @@ class ItemLoader:
             for field_name, value in ItemAdapter(item).items():
                 self._values.setdefault(field_name, [])
                 self._values[field_name] += arg_to_iter(value)
+        self._validate_processor_contracts()
+
+    def validate_processor_contracts(self) -> ContractReport:
+        """
+        Statically check the declared :mod:`processor contracts
+        <itemloaders.contracts>` of every effective processor chain of this
+        loader, without calling any processor.
+
+        Both the default processors and the processors effectively in use for
+        each known field (after applying field-level overrides) are checked
+        for definite incompatibilities between adjacent processing stages and
+        for missing required Loader context keys. Processors that declare no
+        contract keep working as before and are reported as unknown.
+
+        :returns: A :class:`~itemloaders.contracts.ContractReport` with the
+            issues found and the stages whose contract is unknown.
+        """
+        report = ContractReport()
+        context_keys = set(self.context)
+        for chain_label, input_proc, output_proc in self._contract_chains():
+            validate_processor_chain(
+                chain_label, input_proc, output_proc, context_keys, report
+            )
+        return report
+
+    def _validate_processor_contracts(self) -> None:
+        report = self.validate_processor_contracts()
+        if not report.ok:
+            issues = "\n".join(f"- {issue}" for issue in report.issues)
+            raise ProcessorContractError(
+                f"Processor contract mismatch in {self.__class__.__name__}:\n{issues}"
+            )
+
+    def _contract_chains(
+        self,
+    ) -> list[tuple[str, Callable[..., Any], Callable[..., Any]]]:
+        """Return the effective (input, output) processor pairs to check:
+        the default pair plus a pair for each field whose effective
+        processors differ from the defaults."""
+        default_pair = (
+            unbound_method(self.default_input_processor),
+            unbound_method(self.default_output_processor),
+        )
+        chains = [("default processors", *default_pair)]
+        seen = {(id(default_pair[0]), id(default_pair[1]))}
+        for field_name in self._contract_fields():
+            pair = (
+                self.get_input_processor(field_name),
+                self.get_output_processor(field_name),
+            )
+            key = (id(pair[0]), id(pair[1]))
+            if key not in seen:
+                seen.add(key)
+                chains.append((f"field {field_name!r}", *pair))
+        return chains
+
+    def _contract_fields(self) -> set[str]:
+        """Return the names of the fields known to this loader: item fields
+        plus fields customized through ``<field>_in``/``<field>_out``
+        attributes."""
+        fields = set(ItemAdapter(self.item).field_names())
+        for attr in dir(self):
+            if attr.endswith("_in") and len(attr) > 3:
+                fields.add(attr[:-3])
+            elif attr.endswith("_out") and len(attr) > 4:
+                fields.add(attr[:-4])
+        return fields
 
     @property
     def _values(self) -> dict[str, list[Any]]:
