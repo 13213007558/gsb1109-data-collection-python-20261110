@@ -371,6 +371,58 @@ Alias for `itemadapter.adapter.ItemAdapter.get_field_meta_from_class`
 
 ---
 
+## Structural profiling
+
+`itemadapter.StructureProfiler` accumulates per-path structural statistics
+over batches of mixed items (dict, dataclass, attrs, pydantic, TypedDict,
+scrapy.Item), so you can find which fields are missing the most:
+
+```python
+>>> from itemadapter import StructureProfiler
+>>> profiler = StructureProfiler()
+>>> profiler.update([
+...     {"name": "a", "author": {"name": "x"}},
+...     {"name": None, "author": None},
+...     {"name": "c"},
+... ])
+>>> profiler.report()["paths"]["author"]
+{'observations': 2, 'missing': 0, 'undeclared': 0, 'none': 1, 'empty': 0, 'valid': 1, 'missing_rate': 0.0, 'none_rate': 0.5, 'empty_rate': 0.0, 'valid_rate': 0.5, 'null_rate': 0.5, 'types': ['NoneType', 'dict'], 'element_types': []}
+```
+
+For every dotted path (e.g. `author.name`) the profiler counts:
+
+* `observations`: how many times the path was evaluated — the denominator of
+  all rates. For item types with a declared schema every declared field is
+  evaluated once per parent object; for plain dicts only present keys are
+  evaluated, so an absent key lowers the denominator instead of counting as
+  missing. Nested paths are only evaluated when the parent object exists, so
+  null rates are conditional on the parent and are never double-counted
+  across hierarchy levels.
+* `missing`: declared on the item class but not set on the instance.
+  Defaults and default factories are never called to fill gaps.
+* `undeclared`: set on the item but not declared on the item class (pass
+  `item_class` to `add()` for TypedDict items, which are plain dicts at run
+  time).
+* `none`, `empty` (empty collections), `valid`: classification of the
+  observed values, whose type names are kept in `types` (and `element_types`
+  for collection elements).
+
+Elements of a list/tuple/set share the path of the collection itself, so
+arrays of different lengths are never reported as missing fields; the
+denominator of element paths is the number of observed elements.
+
+Profilers can be merged across batches — merging is associative and
+commutative, so profiling batches separately and combining them yields the
+same counters as profiling everything at once:
+
+```python
+>>> combined = StructureProfiler.profile(batch1).merge(StructureProfiler.profile(batch2))
+>>> combined.stats() == StructureProfiler.profile([*batch1, *batch2]).stats()
+True
+```
+
+---
+
 ## Metadata support
 
 `scrapy.item.Item`, `dataclass`, `attrs`, `pydantic` and `TypedDict` objects
