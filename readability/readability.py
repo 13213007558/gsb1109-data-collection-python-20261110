@@ -6,6 +6,9 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+from collections import deque
+from copy import deepcopy
+
 from lxml.etree import tostring
 from lxml.etree import tounicode
 from lxml.etree import _ElementTree
@@ -242,13 +245,18 @@ class Document:
         """
         return clean_attributes(tounicode(self._html(), method="html"))
 
-    def summary(self, html_partial=False, keep_all_images=False):
+    def summary(self, html_partial=False, keep_all_images=False, keep_footnotes=False):
         """
         Given a HTML file, extracts the text of the article.
 
         :param html_partial: return only the div of the document, don't wrap
                              in html and body tags.
         :param keep_all_images: Keep all images in summary.
+        :param keep_footnotes: Collect footnotes referenced by local links
+                               (``href="#name"``) in the extracted article and
+                               append them to the summary. Local references
+                               that cannot be resolved are kept but marked
+                               with the ``readability-missing-ref`` class.
 
         Warning: It mutates internal DOM representation of the HTML document,
         so it is better to call other API methods before this one.
@@ -298,6 +306,10 @@ class Document:
                         if article is None:
                             article = self.html
                 cleaned_article = self.sanitize(article, candidates, keep_all_images)
+                if keep_footnotes:
+                    cleaned_article = self._preserve_footnotes(
+                        cleaned_article, html_partial
+                    )
 
                 article_for_length = cleaned_article or ""
                 if self.xpath:
@@ -1090,6 +1102,145 @@ class Document:
         self.html = node
         return self.get_clean_html()
 
+    def _local_fragment(self, href):
+        """Return the fragment of a same-page local reference, else None.
+
+        External links, including links to fragments of other pages, are
+        never considered local references.
+        """
+        if not href:
+            return None
+        href = href.strip()
+        if href.startswith("#"):
+            return href[1:] or None
+        if self.url:
+            try:
+                parsed = urllib.parse.urlsplit(href)
+                base = urllib.parse.urlsplit(self.url)
+            except ValueError:
+                return None
+            if not parsed.fragment:
+                return None
+            if (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.query,
+            ) == (
+                base.scheme,
+                base.netloc,
+                base.path,
+                base.query,
+            ):
+                return parsed.fragment
+        return None
+
+    @staticmethod
+    def _anchor_targets(root):
+        """Map anchor names to elements, first occurrence in document order
+        wins, so duplicate ids resolve deterministically."""
+        targets = {}
+        for elem in root.iter():
+            if not isinstance(elem.tag, str):
+                continue
+            elem_id = elem.get("id")
+            if elem_id and elem_id not in targets:
+                targets[elem_id] = elem
+            if elem.tag == "a":
+                name = elem.get("name")
+                if name and name not in targets:
+                    targets[name] = elem
+        return targets
+
+    def _preserve_footnotes(self, article_html, html_partial=False):
+        """Collect footnotes referenced by local links in the article.
+
+        Local references (``href="#name"``) that do not resolve inside the
+        extracted article are looked up in a fresh parse of the original
+        document, and the referenced elements (typically footnotes at the
+        bottom of the page) are appended to the article in a
+        ``readability-footnotes`` section. Each target is copied once, no
+        matter how many times it is referenced. References found inside
+        collected footnotes are followed transitively with a visited set,
+        so mutually referencing footnotes terminate. Every local reference
+        left in the output either resolves to an element in the output or
+        is marked with the ``readability-missing-ref`` class.
+        """
+        if html_partial:
+            root = fragment_fromstring(article_html)
+            container = root
+        else:
+            root = document_fromstring(article_html)
+            body = root.find("body")
+            container = None if body is None else body.find("div")
+            if container is None:
+                container = body if body is not None else root
+
+        refs = []
+        seen = set()
+        for anchor in root.iter("a"):
+            fragment = self._local_fragment(anchor.get("href"))
+            if fragment and fragment not in seen:
+                seen.add(fragment)
+                refs.append(fragment)
+        if not refs:
+            return article_html
+
+        provided = set(self._anchor_targets(root))
+        queue = deque(ref for ref in refs if ref not in provided)
+        enqueued = set(queue)
+        collected = []
+        if queue:
+            targets = self._anchor_targets(self._html(True))
+            while queue:
+                fragment = queue.popleft()
+                if fragment in provided:
+                    continue
+                target = targets.get(fragment)
+                if target is None or target.tag in ("html", "body"):
+                    continue
+                copied = deepcopy(target)
+                copied.tail = None
+                collected.append(copied)
+                provided.update(self._anchor_targets(copied))
+                for anchor in copied.iter("a"):
+                    nested = self._local_fragment(anchor.get("href"))
+                    if (
+                        nested
+                        and nested not in provided
+                        and nested not in enqueued
+                    ):
+                        enqueued.add(nested)
+                        queue.append(nested)
+
+        if collected:
+            section = fragment_fromstring(
+                '<section class="readability-footnotes"></section>'
+            )
+            ordered = None
+            for item in collected:
+                if item.tag == "li":
+                    if ordered is None:
+                        ordered = fragment_fromstring("<ol></ol>")
+                        section.append(ordered)
+                    ordered.append(item)
+                else:
+                    ordered = None
+                    section.append(item)
+            container.append(section)
+
+        reachable = set(self._anchor_targets(root))
+        for anchor in root.iter("a"):
+            fragment = self._local_fragment(anchor.get("href"))
+            if not fragment or fragment in reachable:
+                continue
+            classes = (anchor.get("class") or "").split()
+            if "readability-missing-ref" not in classes:
+                classes.append("readability-missing-ref")
+            anchor.set("class", " ".join(classes))
+            anchor.set("data-readability-missing-ref", fragment)
+        return tounicode(root, method="html")
+
 
 def main():
     VERBOSITY = {1: logging.WARNING, 2: logging.INFO, 3: logging.DEBUG}
@@ -1122,6 +1273,13 @@ def main():
         help="negative keywords (comma-separated)",
         action="store",
     )
+    parser.add_option(
+        "-f",
+        "--footnotes",
+        default=False,
+        action="store_true",
+        help="preserve footnotes referenced by the article",
+    )
     (options, args) = parser.parse_args()
 
     if options.verbose:
@@ -1152,10 +1310,14 @@ def main():
         if options.browser:
             from .browser import open_in_browser
 
-            result = "<h2>" + doc.short_title() + "</h2><br/>" + doc.summary()
+            result = "<h2>" + doc.short_title() + "</h2><br/>" + doc.summary(
+                keep_footnotes=options.footnotes
+            )
             open_in_browser(result)
         else:
-            result = "Title:" + doc.short_title() + "\n" + doc.summary()
+            result = "Title:" + doc.short_title() + "\n" + doc.summary(
+                keep_footnotes=options.footnotes
+            )
             print(result)
     finally:
         file.close()

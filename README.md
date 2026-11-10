@@ -49,6 +49,17 @@ The command-line interface accepts a local HTML file or a URL:
 python -m readability -u https://example.com
 ```
 
+Long articles often reference footnotes placed at the bottom of the page.
+Pass `keep_footnotes=True` (or `-f` on the command line) to append the
+footnotes actually referenced by the extracted text, including their
+back-links, while dropping unreferenced footer noise. Each referenced note
+is collected once, and any local reference that cannot be resolved is kept
+but marked with the `readability-missing-ref` class:
+
+```python
+>>> print(doc.summary(keep_footnotes=True))
+```
+
 Run the real-page extraction benchmark with the default minimum F1 of 0.95:
 
 ```bash
