@@ -1,0 +1,229 @@
+# Wayback error-classification diagnostic (offline)
+
+Library retryable_statuses default: [413, 421, 500, 502, 503, 504, 599]
+Retry budget: library default (6); backoff sleep zeroed for speed
+
+### get_memento scenarios
+
+scenario                                         category                               observed outcome             retry?
+---------------------------------------------------------------------------------------------------------------------------
+no_snapshot_plain_404                            no snapshot                            NoMementoError               False
+no_snapshot_404_generic_body                     no snapshot                            NoMementoError               False
+no_snapshot_404_but_excluded_marker_in_body      no snapshot                            BlockedSiteError             False
+blocked_site_200_excluded_body                   site excluded                          BlockedSiteError             False
+blocked_site_403_runtime_header                  site excluded                          BlockedSiteError             False
+blocked_site_403_header_only_empty_body          site excluded                          BlockedSiteError             False
+blocked_site_200_excluded_body_no_header         site excluded                          BlockedSiteError             False
+robots_403_runtime_header                        single resource restricted (robots.txt) BlockedByRobotsError         False
+robots_200_body_only                             single resource restricted (robots.txt) BlockedByRobotsError         False
+robots_substring_false_friend                    single resource restricted (robots.txt) BlockedByRobotsError         False
+transient_503_no_header                          transient service error                MementoPlaybackError         True 
+transient_500_no_header                          transient service error                MementoPlaybackError         True 
+transient_503_with_playback_runtime_header       transient service error                MementoPlaybackError         True 
+transient_connection_reset                       transient service error                ConnectionError              False
+transient_connect_timeout                        transient service error                WaybackRetryError            True 
+transient_read_timeout                           transient service error                WaybackRetryError            True 
+transient_dns_failure                            transient service error                WaybackRetryError            True 
+rate_limit_429_no_memento_header                 live API throttling (429)              RateLimitError               False
+malformed_200_ok_with_no_wayback_signals         unexpected response format/shape       MementoPlaybackError         False
+malformed_403_no_header_no_marker                unexpected response format/shape       MementoPlaybackError         False
+malformed_404_runtime_header_conflict            unexpected response format/shape       BlockedSiteError             False
+malformed_redirect_loop                          unexpected response format/shape       MementoPlaybackError         False
+actual_memento_archived_429                      valid archived capture (not an API failure) Memento returned             False
+actual_memento_archived_500                      valid archived capture (not an API failure) Memento returned             False
+
+### CDX search scenarios
+
+scenario                                         category                               observed outcome             retry?
+---------------------------------------------------------------------------------------------------------------------------
+search_blocked_admin_403                         site excluded                          BlockedSiteError             False
+search_robots_403                                single resource restricted (robots.txt) BlockedByRobotsError         False
+search_blocked_marker_only_in_header             site excluded                          WaybackException             False
+search_blocked_body_only_no_header               site excluded                          BlockedSiteError             False
+search_503_transient                             transient service error                WaybackException             True 
+search_malformed_line                            unexpected response format/shape       UnexpectedResponseFormat     False
+search_robots_marker_inside_data_line            single resource restricted (robots.txt) BlockedByRobotsError         False
+search_empty_body                                control / not an error                 0 record(s) yielded          False
+search_valid_line                                control / not an error                 1 record(s) yielded          False
+search_bad_timestamp_line                        unexpected response format/shape       UnexpectedResponseFormat     False
+
+### Retry-path demonstrations
+
+- two 503s then a memento, retries=2: success on attempt 3, archived status 200 (HTTP attempts: 3)
+- persistent 503, retries=2: MementoPlaybackError after 3 attempts (HTTP attempts: 3)
+- RemoteDisconnected on every attempt, retries=2: ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response')) (note: not treated as retryable) (HTTP attempts: 1)
+
+### Detailed evidence
+
+- no_snapshot_plain_404 [get_memento]
+    input   : status=404; headers={}; body=""
+    outcome : NoMementoError :: The URL https://web.archive.org/web/20170929002712id_/https://example.gov/section/page has no mementos and was never archived
+    retry   : status 404 in retryable_statuses -> False
+    note    : status 404 alone -> NoMementoError
+- no_snapshot_404_generic_body [get_memento]
+    input   : status=404; headers={}; body="<html><body><h1>404 Not Found</h1><p>The Wayback Machine has not archived that URL.</p></body></html"
+    outcome : NoMementoError :: The URL https://web.archive.org/web/20170929002712id_/https://example.gov/section/page has no mementos and was never archived
+    retry   : status 404 in retryable_statuses -> False
+    note    : status 404 takes precedence; body text is not inspected here
+- no_snapshot_404_but_excluded_marker_in_body [get_memento]
+    input   : status=404; headers={}; body="<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 404 in retryable_statuses -> False
+    note    : precedence: body marker is checked BEFORE the 404 branch -> BlockedSiteError
+- blocked_site_200_excluded_body [get_memento]
+    input   : status=200; headers={}; body="<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 200 in retryable_statuses -> False
+    note    : body marker -> BlockedSiteError even though HTTP status is 200
+- blocked_site_403_runtime_header [get_memento]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error'}; body="org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 403 in retryable_statuses -> False
+    note    : runtime header -> BlockedSiteError (header, not body, drives it)
+- blocked_site_403_header_only_empty_body [get_memento]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error'}; body=""
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 403 in retryable_statuses -> False
+    note    : proves the header alone is sufficient; body need not match
+- blocked_site_200_excluded_body_no_header [get_memento]
+    input   : status=200; headers={}; body="<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 200 in retryable_statuses -> False
+    note    : body-only detection; depends on a fixed English sentence
+- robots_403_runtime_header [get_memento]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error'}; body="org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+    outcome : BlockedByRobotsError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt
+    retry   : status 403 in retryable_statuses -> False
+    note    : runtime header -> BlockedByRobotsError
+- robots_200_body_only [get_memento]
+    input   : status=200; headers={}; body="<html><body><h1>Wayback Machine</h1><p>This URL is blocked because of the site's robots.txt file.</p"
+    outcome : BlockedByRobotsError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt
+    retry   : status 200 in retryable_statuses -> False
+    note    : substring "robots.txt" in body -> BlockedByRobotsError
+- robots_substring_false_friend [get_memento]
+    input   : status=200; headers={}; body="<html><body>See our robots.txt policy for details.</body></html>"
+    outcome : BlockedByRobotsError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt
+    retry   : status 200 in retryable_statuses -> False
+    note    : FALSE FRIEND: any archived content mentioning robots.txt is misclassified
+- transient_503_no_header [get_memento]
+    input   : status=503; headers={}; body="<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+    outcome : MementoPlaybackError :: 503 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page
+    retry   : status 503 in retryable_statuses -> True
+    note    : MementoPlaybackError; session layer would have retried this first
+- transient_500_no_header [get_memento]
+    input   : status=500; headers={}; body="<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+    outcome : MementoPlaybackError :: 500 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page
+    retry   : status 500 in retryable_statuses -> True
+    note    : MementoPlaybackError after the session exhausts retries
+- transient_503_with_playback_runtime_header [get_memento]
+    input   : status=503; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.wayback.exception.ResourceNotAvailableException: Resource is not available'}; body=""
+    outcome : MementoPlaybackError :: Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page could not be played: org.archive.wayback.exception.ResourceNotAvailabl
+    retry   : status 503 in retryable_statuses -> True
+    note    : runtime header present but not an access class -> MementoPlaybackError
+- transient_connection_reset [get_memento]
+    input   : status=<ConnectionError>; headers={}; body="('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    outcome : ConnectionError :: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+    retry   : should_retry_error(ConnectionError) -> False
+    note    : NOT matched by should_retry_error(): re-raised raw on attempt 1, never retried
+- transient_connect_timeout [get_memento]
+    input   : status=<ConnectionError>; headers={}; body="(None, 'timed out'): Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/se"
+    outcome : WaybackRetryError :: ConnectionError: (None, 'timed out'): Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page (Caused by None)
+    retry   : should_retry_error(ConnectionError) -> True
+    note    : should_retry_error() -> retried, then WaybackRetryError
+- transient_read_timeout [get_memento]
+    input   : status=<ConnectionError>; headers={}; body="None: read timed out: Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/s"
+    outcome : WaybackRetryError :: ConnectionError: None: read timed out: Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page (Caused by None)
+    retry   : should_retry_error(ConnectionError) -> True
+    note    : retryable error type; WaybackRetryError once budget is spent
+- transient_dns_failure [get_memento]
+    input   : status=<ConnectionError>; headers={}; body="HTTPSConnectionPool(host='web.archive.org', port=443): Max retries exceeded with url: / (Caused by NewConnectionError: f"
+    outcome : WaybackRetryError :: ConnectionError: HTTPSConnectionPool(host='web.archive.org', port=443): Max retries exceeded with url: / (Caused by NewConnectionError: failed to resolve)
+    retry   : should_retry_error(ConnectionError) -> True
+    note    : string-matched as retryable despite being potentially permanent
+- rate_limit_429_no_memento_header [get_memento]
+    input   : status=429; headers={'Retry-After': '30'}; body="too many requests"
+    outcome : RateLimitError :: Wayback rate limit exceeded, retry after 30 s
+    retry   : status 429 in retryable_statuses -> False
+    note    : raised in the session layer as RateLimitError before classification
+- malformed_200_ok_with_no_wayback_signals [get_memento]
+    input   : status=200; headers={}; body="<html><body>login required</body></html>"
+    outcome : MementoPlaybackError :: Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page could not be played
+    retry   : status 200 in retryable_statuses -> False
+    note    : response.ok fallback -> generic MementoPlaybackError
+- malformed_403_no_header_no_marker [get_memento]
+    input   : status=403; headers={}; body="forbidden"
+    outcome : MementoPlaybackError :: 403 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page
+    retry   : status 403 in retryable_statuses -> False
+    note    : generic MementoPlaybackError, NOT a block classification
+- malformed_404_runtime_header_conflict [get_memento]
+    input   : status=404; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error'}; body=""
+    outcome : BlockedSiteError :: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access
+    retry   : status 404 in retryable_statuses -> False
+    note    : header wins over status: reported BlockedSiteError, not NoMementoError
+- malformed_redirect_loop [get_memento]
+    input   : status=302; headers={'Location': 'https://web.archive.org/web/20170929002712id_/https://example.gov/section/page'}; body=""
+    outcome : MementoPlaybackError :: Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is circular
+    retry   : status 302 in retryable_statuses -> False
+    note    : circular-redirect guard -> MementoPlaybackError
+- actual_memento_archived_429 [get_memento]
+    input   : status=429; headers={'Memento-Datetime': 'Fri, 29 Sep 2017 00:27:12 GMT'}; body="rate limited"
+    outcome : Memento returned :: archived status=429
+    retry   : memento responses bypass the retry check entirely
+    note    : Memento-Datetime short-circuits: a valid memento, not an API error
+- actual_memento_archived_500 [get_memento]
+    input   : status=500; headers={'Memento-Datetime': 'Fri, 29 Sep 2017 00:27:12 GMT'}; body="server error"
+    outcome : Memento returned :: archived status=500
+    retry   : memento responses bypass the retry check entirely
+    note    : archived origin error is data, not a Wayback outage
+- search_blocked_admin_403 [search (CDX)]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error'}; body="org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+    outcome : BlockedSiteError :: https://example.gov/section/page
+    retry   : status 403 in retryable_statuses -> False
+    note    : body substring -> BlockedSiteError (status header alone is not enough)
+- search_robots_403 [search (CDX)]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error'}; body="org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+    outcome : BlockedByRobotsError :: https://example.gov/section/page
+    retry   : status 403 in retryable_statuses -> False
+    note    : body substring -> BlockedByRobotsError
+- search_blocked_marker_only_in_header [search (CDX)]
+    input   : status=403; headers={'X-Archive-Wayback-Runtime-Error': 'org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error'}; body=""
+    outcome : WaybackException :: 403 Client Error: None for url: https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fexample.gov%2Fsection%2Fpage&limit=1000&showResumeKey=true&resolveRevis
+    retry   : status 403 in retryable_statuses -> False
+    note    : EVIDENCE GAP: search() only inspects the body -> generic WaybackException
+- search_blocked_body_only_no_header [search (CDX)]
+    input   : status=403; headers={}; body="org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+    outcome : BlockedSiteError :: https://example.gov/section/page
+    retry   : status 403 in retryable_statuses -> False
+    note    : body substring alone is enough -> BlockedSiteError
+- search_503_transient [search (CDX)]
+    input   : status=503; headers={}; body="<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+    outcome : WaybackException :: 503 Server Error: None for url: https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fexample.gov%2Fsection%2Fpage&limit=1000&showResumeKey=true&resolveRevis
+    retry   : status 503 in retryable_statuses -> True
+    note    : generic WaybackException after retries; not classified as transient
+- search_malformed_line [search (CDX)]
+    input   : status=200; headers={}; body="this is not cdx output "
+    outcome : UnexpectedResponseFormat :: Could not parse CDX output: "this is not cdx output" (query: {'url': 'https://example.gov/section/page', 'limit': '1000', 'showResumeKey': 'true', 'resolveRevis
+    retry   : status 200 in retryable_statuses -> False
+    note    : UnexpectedResponseFormat
+- search_robots_marker_inside_data_line [search (CDX)]
+    input   : status=200; headers={}; body="something RobotAccessControlException happened "
+    outcome : BlockedByRobotsError :: https://example.gov/section/page
+    retry   : status 200 in retryable_statuses -> False
+    note    : parse failure path re-scans the line -> BlockedByRobotsError
+- search_empty_body [search (CDX)]
+    input   : status=200; headers={}; body=""
+    outcome : 0 record(s) yielded :: 
+    retry   : status 200 in retryable_statuses -> False
+    note    : empty result set, no error (legitimate zero captures)
+- search_valid_line [search (CDX)]
+    input   : status=200; headers={}; body="gov,example)/section/page 20170929002712 https://example.gov/section/page text/html 200 ABCDEFGHIJKL"
+    outcome : 1 record(s) yielded :: 
+    retry   : status 200 in retryable_statuses -> False
+    note    : parsed successfully; control case
+- search_bad_timestamp_line [search (CDX)]
+    input   : status=200; headers={}; body="gov,example)/p 99999999999999 https://example.gov/p text/html 200 DIGEST 10 "
+    outcome : UnexpectedResponseFormat :: Could not parse CDX output: "gov,example)/p 99999999999999 https://example.gov/p text/html 200 DIGEST 10" (query: {'url': 'https://example.gov/section/page', 'l
+    retry   : status 200 in retryable_statuses -> False
+    note    : UnexpectedResponseFormat wrapped around the ValueError
+
+Structured results written to diagnostics/output/results.json

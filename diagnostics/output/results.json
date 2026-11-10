@@ -1,0 +1,702 @@
+{
+  "retryable_statuses": [
+    413,
+    421,
+    500,
+    502,
+    503,
+    504,
+    599
+  ],
+  "memento_results": [
+    {
+      "api": "get_memento",
+      "scenario": "no_snapshot_plain_404",
+      "description": "404 with an empty body and no runtime-error header",
+      "business_category": "no snapshot",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 404,
+        "headers": {},
+        "body_snippet": ""
+      },
+      "outcome": "NoMementoError",
+      "exception": "NoMementoError",
+      "message": "The URL https://web.archive.org/web/20170929002712id_/https://example.gov/section/page has no mementos and was never archived",
+      "would_retry": false,
+      "retry_basis": "status 404 in retryable_statuses -> False",
+      "evidence_note": "status 404 alone -> NoMementoError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "no_snapshot_404_generic_body",
+      "description": "404 with a generic \"not archived\" HTML body, no runtime header",
+      "business_category": "no snapshot",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 404,
+        "headers": {},
+        "body_snippet": "<html><body><h1>404 Not Found</h1><p>The Wayback Machine has not archived that URL.</p></body></html"
+      },
+      "outcome": "NoMementoError",
+      "exception": "NoMementoError",
+      "message": "The URL https://web.archive.org/web/20170929002712id_/https://example.gov/section/page has no mementos and was never archived",
+      "would_retry": false,
+      "retry_basis": "status 404 in retryable_statuses -> False",
+      "evidence_note": "status 404 takes precedence; body text is not inspected here"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "no_snapshot_404_but_excluded_marker_in_body",
+      "description": "404 whose body contains the exclusion sentence",
+      "business_category": "no snapshot",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 404,
+        "headers": {},
+        "body_snippet": "<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 404 in retryable_statuses -> False",
+      "evidence_note": "precedence: body marker is checked BEFORE the 404 branch -> BlockedSiteError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "blocked_site_200_excluded_body",
+      "description": "200 (cassette-faithful) body: \"This URL has been excluded...\"",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "body marker -> BlockedSiteError even though HTTP status is 200"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "blocked_site_403_runtime_header",
+      "description": "403 with AdministrativeAccessControlException runtime header",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error"
+        },
+        "body_snippet": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "runtime header -> BlockedSiteError (header, not body, drives it)"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "blocked_site_403_header_only_empty_body",
+      "description": "403 with the runtime header but an empty body",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error"
+        },
+        "body_snippet": ""
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "proves the header alone is sufficient; body need not match"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "blocked_site_200_excluded_body_no_header",
+      "description": "200 exclusion body but NO runtime header (mirrors real cassette)",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "<html><body><h1>Wayback Machine</h1><p>This URL has been excluded from the Wayback Machine.</p></bod"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "body-only detection; depends on a fixed English sentence"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "robots_403_runtime_header",
+      "description": "403 with RobotAccessControlException runtime header",
+      "business_category": "single resource restricted (robots.txt)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+        },
+        "body_snippet": "org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+      },
+      "outcome": "BlockedByRobotsError",
+      "exception": "BlockedByRobotsError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "runtime header -> BlockedByRobotsError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "robots_200_body_only",
+      "description": "200 body mentioning robots.txt, no runtime header",
+      "business_category": "single resource restricted (robots.txt)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "<html><body><h1>Wayback Machine</h1><p>This URL is blocked because of the site's robots.txt file.</p"
+      },
+      "outcome": "BlockedByRobotsError",
+      "exception": "BlockedByRobotsError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "substring \"robots.txt\" in body -> BlockedByRobotsError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "robots_substring_false_friend",
+      "description": "200 benign page that merely mentions robots.txt",
+      "business_category": "single resource restricted (robots.txt)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "<html><body>See our robots.txt policy for details.</body></html>"
+      },
+      "outcome": "BlockedByRobotsError",
+      "exception": "BlockedByRobotsError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked by robots.txt",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "FALSE FRIEND: any archived content mentioning robots.txt is misclassified"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_503_no_header",
+      "description": "503 with no runtime header and no redirect target",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 503,
+        "headers": {},
+        "body_snippet": "<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "503 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page",
+      "would_retry": true,
+      "retry_basis": "status 503 in retryable_statuses -> True",
+      "evidence_note": "MementoPlaybackError; session layer would have retried this first"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_500_no_header",
+      "description": "500 with no runtime header",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 500,
+        "headers": {},
+        "body_snippet": "<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "500 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page",
+      "would_retry": true,
+      "retry_basis": "status 500 in retryable_statuses -> True",
+      "evidence_note": "MementoPlaybackError after the session exhausts retries"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_503_with_playback_runtime_header",
+      "description": "503 with a generic (non-access-control) runtime header",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 503,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.wayback.exception.ResourceNotAvailableException: Resource is not available"
+        },
+        "body_snippet": ""
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page could not be played: org.archive.wayback.exception.ResourceNotAvailabl",
+      "would_retry": true,
+      "retry_basis": "status 503 in retryable_statuses -> True",
+      "evidence_note": "runtime header present but not an access class -> MementoPlaybackError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_connection_reset",
+      "description": "connection dropped before any response (RemoteDisconnected family)",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "exception before response",
+        "error_type": "ConnectionError",
+        "status": null,
+        "headers": {},
+        "body_snippet": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+      },
+      "outcome": "ConnectionError",
+      "exception": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "would_retry": false,
+      "retry_basis": "should_retry_error(ConnectionError) -> False",
+      "evidence_note": "NOT matched by should_retry_error(): re-raised raw on attempt 1, never retried"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_connect_timeout",
+      "description": "TCP connect timeout before any response",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "exception before response",
+        "error_type": "ConnectionError",
+        "status": null,
+        "headers": {},
+        "body_snippet": "(None, 'timed out'): Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/se"
+      },
+      "outcome": "WaybackRetryError",
+      "exception": "WaybackRetryError",
+      "message": "ConnectionError: (None, 'timed out'): Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page (Caused by None)",
+      "would_retry": true,
+      "retry_basis": "should_retry_error(ConnectionError) -> True",
+      "evidence_note": "should_retry_error() -> retried, then WaybackRetryError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_read_timeout",
+      "description": "read timeout while waiting for response headers",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "exception before response",
+        "error_type": "ConnectionError",
+        "status": null,
+        "headers": {},
+        "body_snippet": "None: read timed out: Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/s"
+      },
+      "outcome": "WaybackRetryError",
+      "exception": "WaybackRetryError",
+      "message": "ConnectionError: None: read timed out: Max retries exceeded with url: https://web.archive.org/web/20170929002712id_/https://example.gov/section/page (Caused by None)",
+      "would_retry": true,
+      "retry_basis": "should_retry_error(ConnectionError) -> True",
+      "evidence_note": "retryable error type; WaybackRetryError once budget is spent"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "transient_dns_failure",
+      "description": "DNS/name resolution failure (NewConnectionError)",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "exception before response",
+        "error_type": "ConnectionError",
+        "status": null,
+        "headers": {},
+        "body_snippet": "HTTPSConnectionPool(host='web.archive.org', port=443): Max retries exceeded with url: / (Caused by NewConnectionError: f"
+      },
+      "outcome": "WaybackRetryError",
+      "exception": "WaybackRetryError",
+      "message": "ConnectionError: HTTPSConnectionPool(host='web.archive.org', port=443): Max retries exceeded with url: / (Caused by NewConnectionError: failed to resolve)",
+      "would_retry": true,
+      "retry_basis": "should_retry_error(ConnectionError) -> True",
+      "evidence_note": "string-matched as retryable despite being potentially permanent"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "rate_limit_429_no_memento_header",
+      "description": "429 with Retry-After but no Memento-Datetime (live API throttle)",
+      "business_category": "live API throttling (429)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 429,
+        "headers": {
+          "Retry-After": "30"
+        },
+        "body_snippet": "too many requests"
+      },
+      "outcome": "RateLimitError",
+      "exception": "RateLimitError",
+      "message": "Wayback rate limit exceeded, retry after 30 s",
+      "would_retry": false,
+      "retry_basis": "status 429 in retryable_statuses -> False",
+      "evidence_note": "raised in the session layer as RateLimitError before classification"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "malformed_200_ok_with_no_wayback_signals",
+      "description": "200, no Memento-Datetime, no runtime header, plain body",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "<html><body>login required</body></html>"
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page could not be played",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "response.ok fallback -> generic MementoPlaybackError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "malformed_403_no_header_no_marker",
+      "description": "403 with neither runtime header nor known body marker",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {},
+        "body_snippet": "forbidden"
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "403 error while loading memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "generic MementoPlaybackError, NOT a block classification"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "malformed_404_runtime_header_conflict",
+      "description": "404 status but header claims AdministrativeAccessControlException",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 404,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error"
+        },
+        "body_snippet": ""
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is blocked from access",
+      "would_retry": false,
+      "retry_basis": "status 404 in retryable_statuses -> False",
+      "evidence_note": "header wins over status: reported BlockedSiteError, not NoMementoError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "malformed_redirect_loop",
+      "description": "302 redirect pointing back at the same memento URL",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 302,
+        "headers": {
+          "Location": "https://web.archive.org/web/20170929002712id_/https://example.gov/section/page"
+        },
+        "body_snippet": ""
+      },
+      "outcome": "MementoPlaybackError",
+      "exception": "MementoPlaybackError",
+      "message": "Memento at https://web.archive.org/web/20170929002712id_/https://example.gov/section/page is circular",
+      "would_retry": false,
+      "retry_basis": "status 302 in retryable_statuses -> False",
+      "evidence_note": "circular-redirect guard -> MementoPlaybackError"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "actual_memento_archived_429",
+      "description": "Memento-Datetime present with an archived 429 status",
+      "business_category": "valid archived capture (not an API failure)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 429,
+        "headers": {
+          "Memento-Datetime": "Fri, 29 Sep 2017 00:27:12 GMT"
+        },
+        "body_snippet": "rate limited"
+      },
+      "outcome": "Memento returned",
+      "exception": null,
+      "message": "archived status=429",
+      "would_retry": false,
+      "retry_basis": "memento responses bypass the retry check entirely",
+      "evidence_note": "Memento-Datetime short-circuits: a valid memento, not an API error"
+    },
+    {
+      "api": "get_memento",
+      "scenario": "actual_memento_archived_500",
+      "description": "Memento-Datetime present with an archived 500 status",
+      "business_category": "valid archived capture (not an API failure)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 500,
+        "headers": {
+          "Memento-Datetime": "Fri, 29 Sep 2017 00:27:12 GMT"
+        },
+        "body_snippet": "server error"
+      },
+      "outcome": "Memento returned",
+      "exception": null,
+      "message": "archived status=500",
+      "would_retry": false,
+      "retry_basis": "memento responses bypass the retry check entirely",
+      "evidence_note": "archived origin error is data, not a Wayback outage"
+    }
+  ],
+  "search_results": [
+    {
+      "api": "search (CDX)",
+      "scenario": "search_blocked_admin_403",
+      "description": "CDX 403 body containing AdministrativeAccessControlException",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error"
+        },
+        "body_snippet": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://example.gov/section/page",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "body substring -> BlockedSiteError (status header alone is not enough)"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_robots_403",
+      "description": "CDX 403 body containing RobotAccessControlException",
+      "business_category": "single resource restricted (robots.txt)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+        },
+        "body_snippet": "org.archive.wayback.exception.RobotAccessControlException: Blocked By Robots Error"
+      },
+      "outcome": "BlockedByRobotsError",
+      "exception": "BlockedByRobotsError",
+      "message": "https://example.gov/section/page",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "body substring -> BlockedByRobotsError"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_blocked_marker_only_in_header",
+      "description": "CDX 403 with access exception only in the header, empty body",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {
+          "X-Archive-Wayback-Runtime-Error": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlException: Blocked Site Error"
+        },
+        "body_snippet": ""
+      },
+      "outcome": "WaybackException",
+      "exception": "WaybackException",
+      "message": "403 Client Error: None for url: https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fexample.gov%2Fsection%2Fpage&limit=1000&showResumeKey=true&resolveRevis",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "EVIDENCE GAP: search() only inspects the body -> generic WaybackException"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_blocked_body_only_no_header",
+      "description": "CDX 403 with the access exception string only in the body, no header",
+      "business_category": "site excluded",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 403,
+        "headers": {},
+        "body_snippet": "org.archive.util.io.RuntimeIOException: org.archive.wayback.exception.AdministrativeAccessControlExc"
+      },
+      "outcome": "BlockedSiteError",
+      "exception": "BlockedSiteError",
+      "message": "https://example.gov/section/page",
+      "would_retry": false,
+      "retry_basis": "status 403 in retryable_statuses -> False",
+      "evidence_note": "body substring alone is enough -> BlockedSiteError"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_503_transient",
+      "description": "CDX 503 plain error page",
+      "business_category": "transient service error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 503,
+        "headers": {},
+        "body_snippet": "<html><body><h1>503 Service Unavailable</h1><p>The Wayback Machine is temporarily unavailable.</p></"
+      },
+      "outcome": "WaybackException",
+      "exception": "WaybackException",
+      "message": "503 Server Error: None for url: https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fexample.gov%2Fsection%2Fpage&limit=1000&showResumeKey=true&resolveRevis",
+      "would_retry": true,
+      "retry_basis": "status 503 in retryable_statuses -> True",
+      "evidence_note": "generic WaybackException after retries; not classified as transient"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_malformed_line",
+      "description": "CDX 200 with an unparseable line (too few fields)",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "this is not cdx output "
+      },
+      "outcome": "UnexpectedResponseFormat",
+      "exception": "UnexpectedResponseFormat",
+      "message": "Could not parse CDX output: \"this is not cdx output\" (query: {'url': 'https://example.gov/section/page', 'limit': '1000', 'showResumeKey': 'true', 'resolveRevis",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "UnexpectedResponseFormat"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_robots_marker_inside_data_line",
+      "description": "CDX 200 whose malformed line embeds RobotAccessControlException",
+      "business_category": "single resource restricted (robots.txt)",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "something RobotAccessControlException happened "
+      },
+      "outcome": "BlockedByRobotsError",
+      "exception": "BlockedByRobotsError",
+      "message": "https://example.gov/section/page",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "parse failure path re-scans the line -> BlockedByRobotsError"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_empty_body",
+      "description": "CDX 200 with a completely empty body",
+      "business_category": "control / not an error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": ""
+      },
+      "outcome": "0 record(s) yielded",
+      "exception": null,
+      "message": "",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "empty result set, no error (legitimate zero captures)"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_valid_line",
+      "description": "CDX 200 with one well-formed record",
+      "business_category": "control / not an error",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "gov,example)/section/page 20170929002712 https://example.gov/section/page text/html 200 ABCDEFGHIJKL"
+      },
+      "outcome": "1 record(s) yielded",
+      "exception": null,
+      "message": "",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "parsed successfully; control case"
+    },
+    {
+      "api": "search (CDX)",
+      "scenario": "search_bad_timestamp_line",
+      "description": "CDX 200 whose timestamp cannot be parsed as a date",
+      "business_category": "unexpected response format/shape",
+      "input": {
+        "kind": "http response",
+        "error_type": null,
+        "status": 200,
+        "headers": {},
+        "body_snippet": "gov,example)/p 99999999999999 https://example.gov/p text/html 200 DIGEST 10 "
+      },
+      "outcome": "UnexpectedResponseFormat",
+      "exception": "UnexpectedResponseFormat",
+      "message": "Could not parse CDX output: \"gov,example)/p 99999999999999 https://example.gov/p text/html 200 DIGEST 10\" (query: {'url': 'https://example.gov/section/page', 'l",
+      "would_retry": false,
+      "retry_basis": "status 200 in retryable_statuses -> False",
+      "evidence_note": "UnexpectedResponseFormat wrapped around the ValueError"
+    }
+  ],
+  "retry_demonstrations": [
+    {
+      "case": "two 503s then a memento, retries=2",
+      "attempts": 3,
+      "result": "success on attempt 3, archived status 200"
+    },
+    {
+      "case": "persistent 503, retries=2",
+      "attempts": 3,
+      "result": "MementoPlaybackError after 3 attempts"
+    },
+    {
+      "case": "RemoteDisconnected on every attempt, retries=2",
+      "attempts": 1,
+      "result": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response')) (note: not treated as retryable)"
+    }
+  ]
+}
