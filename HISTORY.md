@@ -1,6 +1,13 @@
 # History / Changelog
 
 
+## Unreleased
+
+- `UrlStore`: discovery source registration (`source` parameter on `add_urls()` and `add_from_html()`)
+- `UrlStore.update_source()`: atomic per-source replacement, a URL leaves the crawl candidates only once its last source withdraws, crawled history is kept
+- `UrlStore`: source queries `get_sources()`, `get_source_urls()` and `get_known_sources()`
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)

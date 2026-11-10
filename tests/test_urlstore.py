@@ -1327,3 +1327,168 @@ def test_draw_past_long_visited_run():
     assert store.get_url("https://a.org") == "https://a.org/150"
     store.add_urls([f"https://a.org/{i}" for i in range(200)], visited=True)
     assert store.get_url("https://a.org") is None
+
+
+def test_source_registration():
+    "Discovery sources are registered per normalized URL, anonymous adds have none."
+    store = UrlStore()
+    store.add_urls(["https://a.org/x", "https://a.org/y"], source="seed")
+    store.add_urls(["https://A.org/x/", "https://a.org/z"], source="sitemap")
+    # all discovery locations kept under the normalized address
+    assert store.get_sources("https://a.org/x") == ["seed", "sitemap"]
+    assert store.get_sources("https://a.org/y") == ["seed"]
+    assert store.get_sources("https://a.org/z") == ["sitemap"]
+    assert store.get_sources("https://a.org/unknown") == []
+    assert store.get_sources("not-a-url") == []
+    assert store.get_known_sources() == ["seed", "sitemap"]
+    assert sorted(store.get_source_urls("seed")) == [
+        "https://a.org/x",
+        "https://a.org/y",
+    ]
+    assert store.get_source_urls("listpage") == []
+    # anonymous adds stay source-less and are never withdrawn by sources
+    store.add_urls(["https://a.org/w"])
+    assert store.get_sources("https://a.org/w") == []
+    store.update_source("seed", [])
+    assert store.is_known("https://a.org/w")
+    # source registration through HTML link extraction
+    html_store = UrlStore()
+    html_store.add_from_html(
+        '<html><body><a href="https://a.org/p1"/></html>',
+        "https://a.org",
+        source="listpage",
+    )
+    assert html_store.get_sources("https://a.org/p1") == ["listpage"]
+
+
+def test_sources_merge_with_twins():
+    "Sources of http/https twins are unioned under the canonical entry."
+    store = UrlStore()
+    store.add_urls(["http://a.org/x"], source="seed")
+    store.add_urls(["https://a.org/x"], source="sitemap")
+    assert list(store.urldict) == ["https://a.org"]
+    assert store.get_sources("http://a.org/x") == ["seed", "sitemap"]
+
+
+def test_update_source_replaces_set():
+    "A source update adds new claims and withdraws the missing ones."
+    store = UrlStore()
+    store.update_source("sitemap", ["https://a.org/1", "https://a.org/2"])
+    assert sorted(store.get_source_urls("sitemap")) == [
+        "https://a.org/1",
+        "https://a.org/2",
+    ]
+    assert store.total_url_number() == 2
+    # replacement: /1 withdrawn, /3 appears
+    store.update_source("sitemap", ["https://a.org/2", "https://a.org/3"])
+    assert store.get_sources("https://a.org/1") == []
+    assert not store.is_known("https://a.org/1")
+    assert store.get_sources("https://a.org/3") == ["sitemap"]
+    assert store.total_url_number() == 2
+    # trailing-slash variants of the same address keep the claim
+    store.update_source("sitemap", ["https://a.org/2/", "https://a.org/3"])
+    assert store.get_sources("https://a.org/2") == ["sitemap"]
+    assert store.total_url_number() == 2
+
+
+def test_sources_alternating_updates():
+    "Two sources alternate claiming the same address, counts and candidates follow."
+    store = UrlStore()
+    url = "https://a.org/x"
+    for _ in range(3):
+        store.update_source("sitemap", [url])
+        store.update_source("seed", [url])
+        assert store.total_url_number() == 1
+        assert store.get_sources(url) == ["seed", "sitemap"]
+        # one source withdraws: the other keeps the URL among the candidates
+        store.update_source("sitemap", [])
+        assert store.get_sources(url) == ["seed"]
+        assert store.find_unvisited_urls("https://a.org") == [url]
+        assert store.total_url_number() == 1
+        store.update_source("sitemap", [url])
+        store.update_source("seed", [])
+        assert store.get_sources(url) == ["sitemap"]
+        assert store.find_unvisited_urls("https://a.org") == [url]
+        # last source withdraws: the URL leaves the candidates
+        store.update_source("sitemap", [])
+        assert store.get_sources(url) == []
+        assert store.find_unvisited_urls("https://a.org") == []
+        assert not store.is_known(url)
+        assert store.total_url_number() == 0
+        assert store.done is True
+
+
+def test_update_source_keeps_visited_history():
+    "Withdrawn URLs already crawled stay in store as history."
+    store = UrlStore()
+    store.update_source("sitemap", ["https://a.org/1", "https://a.org/2"])
+    assert store.get_url("https://a.org") == "https://a.org/1"
+    store.update_source("sitemap", ["https://a.org/1"])
+    # the visited URL stays, the unvisited one is gone
+    assert store.find_known_urls("https://a.org") == ["https://a.org/1"]
+    assert store.has_been_visited("https://a.org/1")
+    assert not store.is_known("https://a.org/2")
+    assert store.urldict["https://a.org"].count == 1
+    assert store.total_url_number() == 1
+    # withdrawing everything keeps the crawled history but empties candidates
+    store.update_source("sitemap", [])
+    assert store.find_known_urls("https://a.org") == ["https://a.org/1"]
+    assert store.get_sources("https://a.org/1") == []
+    assert store.get_url("https://a.org") is None
+    assert store.done is True
+
+
+def test_update_source_failure_keeps_old_set():
+    "A failed source update does not change the source's previous set."
+    store = UrlStore()
+    store.update_source("sitemap", ["https://a.org/1", "https://a.org/2"])
+
+    def broken():
+        yield "https://a.org/3"
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        store.update_source("sitemap", broken())
+    with pytest.raises(TypeError):
+        store.update_source("sitemap", None)  # type: ignore[arg-type]
+    assert sorted(store.get_source_urls("sitemap")) == [
+        "https://a.org/1",
+        "https://a.org/2",
+    ]
+    assert store.find_unvisited_urls("https://a.org") == [
+        "https://a.org/1",
+        "https://a.org/2",
+    ]
+    assert store.total_url_number() == 2
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_source_state_persists(tmp_path, compressed):
+    "Source relations survive a write/load round-trip and remain editable."
+    store = UrlStore(compressed=compressed)
+    shared = "https://a.org/shared"
+    store.update_source("sitemap", [shared, "https://a.org/sm-only"])
+    store.update_source("seed", [shared])
+    assert store.get_url("https://a.org") == shared  # crawled history
+
+    tmp = str(tmp_path / "urlstore.pickle")
+    store.write(tmp)
+    restored = load_store(tmp)
+
+    assert restored.get_known_sources() == ["seed", "sitemap"]
+    assert restored.get_sources(shared) == ["seed", "sitemap"]
+    assert restored.has_been_visited(shared)
+    # withdrawal still works after the restart
+    restored.update_source("seed", [])
+    assert restored.get_sources(shared) == ["sitemap"]
+    restored.update_source("sitemap", ["https://a.org/sm-only"])
+    # shared is crawled history, sm-only still claimed by the sitemap
+    assert restored.get_sources(shared) == []
+    assert restored.find_known_urls("https://a.org") == [
+        shared,
+        "https://a.org/sm-only",
+    ]
+    assert restored.find_unvisited_urls("https://a.org") == ["https://a.org/sm-only"]
+    restored.update_source("sitemap", [])
+    assert restored.find_known_urls("https://a.org") == [shared]
+    assert restored.done is True

@@ -122,6 +122,30 @@ store.reset()                    # clear the store and internal caches
 ```
 
 
+## Tracking discovery sources
+
+The same URL is often found by several channels (sitemap, manual seeds, listing pages). Register a source on addition and the store keeps all discovery locations under the normalized address:
+
+```python
+store.add_urls(['https://example.com/a'], source='seed')
+store.add_urls(['https://example.com/a', 'https://example.com/b'], source='sitemap')
+store.get_sources('https://example.com/a')   # ['seed', 'sitemap']
+store.get_known_sources()                    # ['seed', 'sitemap']
+store.get_source_urls('sitemap')             # URLs currently claimed by the sitemap
+```
+
+`update_source()` replaces the whole set of a source atomically: URLs missing from the new set lose the source's claim, and a URL only leaves the crawl candidates once its last source withdraws. URLs already crawled stay in the store as history. If preparing the new set fails (e.g. a raising iterable), the source's previous set is left unchanged.
+
+```python
+store.update_source('sitemap', ['https://example.com/b', 'https://example.com/c'])
+# 'https://example.com/a' lost the sitemap but stays a candidate (claimed by 'seed')
+store.update_source('seed', [])
+# last source of /a withdrawn: /a leaves the candidates
+```
+
+Source relations are stored with the URLs and survive `write()`/`load_store()` round-trips.
+
+
 ## Discarding domains
 
 Remove entire domains from the store:

@@ -117,11 +117,21 @@ class DomainEntry:
 class UrlPathTuple:
     "Class storing information for URL paths relative to a domain/host."
 
-    __slots__ = ("urlpath", "visited")
+    __slots__ = ("urlpath", "visited", "sources")
 
-    def __init__(self, urlpath: str, visited: bool) -> None:
+    def __init__(
+        self, urlpath: str, visited: bool, sources: Iterable[str] = ()
+    ) -> None:
         self.urlpath: bytes = urlpath.encode("utf-8")
         self.visited: bool = visited
+        # discovery sources (e.g. sitemap, seed, list page), empty if untracked
+        self.sources: frozenset[str] = frozenset(sources)
+
+    def __setstate__(self, state: tuple[None, dict[str, Any]]) -> None:
+        "Fill in the slots missing from older pickles."
+        self.sources = frozenset()
+        for slot, value in state[1].items():
+            setattr(self, slot, value)
 
     def path(self) -> str:
         "Get the URL path as string."
@@ -171,7 +181,8 @@ def _dedup_extend(
     left: bool = False,
 ) -> int:
     """Add tuples whose paths are not yet known, in input order, and return their number.
-    A visited input marks the stored URL as visited, never the reverse."""
+    A visited input marks the stored URL as visited, never the reverse.
+    Discovery sources of the input are unioned into the stored tuple."""
     new = []
     for utuple in tuples:
         path = utuple.path()
@@ -179,8 +190,11 @@ def _dedup_extend(
         if known is None:
             new.append(utuple)
             index[path] = utuple
-        elif utuple.visited:
-            known.visited = True
+        else:
+            if utuple.visited:
+                known.visited = True
+            if utuple.sources and not utuple.sources <= known.sources:
+                known.sources = known.sources | utuple.sources
     if left:
         urls.extendleft(reversed(new))
     else:
@@ -280,9 +294,10 @@ class UrlStore:
             return None
 
     def _buffer_urls(
-        self, data: list[str], visited: bool
+        self, data: Iterable[str], visited: bool, source: str | None = None
     ) -> defaultdict[str, deque[UrlPathTuple]]:
         inputdict: defaultdict[str, deque[UrlPathTuple]] = defaultdict(deque)
+        sources = () if source is None else (source,)
         for url in dict.fromkeys(data):
             split = self._split(url)
             # filter on the final form, as in check_url
@@ -295,7 +310,7 @@ class UrlStore:
             ):
                 LOGGER.warning("Discarding URL: %s", url)
                 continue
-            inputdict[split[1]].append(UrlPathTuple(split[2], visited))
+            inputdict[split[1]].append(UrlPathTuple(split[2], visited, sources))
         return inputdict
 
     def _find(self, key: str) -> str | None:
@@ -446,18 +461,70 @@ class UrlStore:
         urls: list[str] | None = None,
         appendleft: list[str] | None = None,
         visited: bool = False,
+        source: str | None = None,
     ) -> None:
         """Add a list of URLs to the (possibly) existing one.
         Optional: append certain URLs to the left,
-        specify if the URLs have already been visited."""
+        specify if the URLs have already been visited,
+        register the discovery source of the URLs."""
         # normalize outside the lock
-        right = self._buffer_urls(urls, visited) if urls else {}
-        left = self._buffer_urls(appendleft, visited) if appendleft else {}
+        right = self._buffer_urls(urls, visited, source) if urls else {}
+        left = self._buffer_urls(appendleft, visited, source) if appendleft else {}
         with self._lock:
             for host, urltuples in right.items():
                 self._store_urls(host, urltuples)
             for host, urltuples in left.items():
                 self._store_urls(host, urltuples, left=True)
+
+    def update_source(
+        self, source: str, urls: Iterable[str], visited: bool = False
+    ) -> None:
+        """Replace the URL set claimed by a source, atomically.
+
+        URLs absent from the new set lose the source's claim; a URL is only
+        removed from the crawl candidates once its last source withdraws and
+        it has not been visited, crawled history is kept. A failure while
+        preparing the new set (e.g. a raising iterable) leaves the previous
+        set of the source unchanged."""
+        # normalize outside the lock, a failure here changes nothing
+        buffered = self._buffer_urls(urls, visited, source)
+        with self._lock:
+            claims: dict[str, set[str]] = defaultdict(set)
+            for host, urltuples in buffered.items():
+                self._store_urls(host, urltuples)
+                stored = self._find(host)
+                if stored is not None:
+                    claims[stored].update(t.path() for t in urltuples)
+            self._withdraw(source, claims)
+            self._set_done()
+
+    def _withdraw(self, source: str, claims: dict[str, set[str]]) -> None:
+        """Drop a source's claims not present in claims (stored key to paths).
+        Unvisited tuples left without any source are removed from the
+        candidates, visited ones stay as history."""
+        for key, entry in self.urldict.items():
+            if entry.state is State.BUSTED:
+                continue
+            keep = claims.get(key)
+            urls = self._live(key)
+            kept = []
+            dropped = False
+            for utuple in urls:
+                if source in utuple.sources:
+                    path = utuple.path()
+                    if not (keep and (path in keep or _slash_variant(path) in keep)):
+                        utuple.sources = utuple.sources - {source}
+                        if not utuple.sources and not utuple.visited:
+                            dropped = True
+                            continue
+                kept.append(utuple)
+            if dropped:
+                urls = deque(kept)
+                entry.tuples = urls
+                if entry is self._hot:
+                    self._index = None
+                entry.cursor = 0
+                self._update(entry, urls)
 
     def add_from_html(
         self,
@@ -466,6 +533,7 @@ class UrlStore:
         external: bool = False,
         lang: str | None = None,
         with_nav: bool = True,
+        source: str | None = None,
     ) -> None:
         "Find links in a HTML document, filter them and add them to the data store."
         base_url = get_base_url(url)
@@ -479,7 +547,7 @@ class UrlStore:
             strict=self.strict,
             with_nav=with_nav,
         )
-        self.add_urls(urls=links, appendleft=links_priority)
+        self.add_urls(urls=links, appendleft=links_priority, source=source)
 
     def discard(self, domains: list[str]) -> None:
         "Declare domains void and prune the store, http/https twins included."
@@ -566,6 +634,42 @@ class UrlStore:
     def is_known(self, url: str) -> bool:
         "Check if the given URL has already been stored."
         return not self.filter_unknown_urls([url])
+
+    # DISCOVERY SOURCES
+
+    def get_known_sources(self) -> list[str]:
+        "Return all discovery sources currently registered in store."
+        with self._lock:
+            return sorted(
+                {
+                    source
+                    for domain in self.urldict
+                    for utuple in self._load_urls(domain)
+                    for source in utuple.sources
+                }
+            )
+
+    def get_sources(self, url: str) -> list[str]:
+        "Return the discovery sources registered for the given URL."
+        split = self._split(url)
+        if split is None:
+            return []
+        with self._lock:
+            key = self._find(split[1])
+            if key is None:
+                return []
+            known = _lookup(split[2], self._paths(key))
+            return sorted(known.sources) if known else []
+
+    def get_source_urls(self, source: str) -> list[str]:
+        "Return all URLs currently claimed by the given discovery source."
+        with self._lock:
+            return [
+                domain + utuple.path()
+                for domain in self.urldict
+                for utuple in self._load_urls(domain)
+                if source in utuple.sources
+            ]
 
     # DOWNLOADS
 
