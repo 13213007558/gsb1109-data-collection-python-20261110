@@ -2,6 +2,10 @@ from __future__ import absolute_import
 
 import logging
 
+# explicit asynchronous export flow (202 + polling)
+from ._async_export import (AsyncExportError, AsyncExportSpec, ExportJob,
+                            ExportJobFailed, ExportWaitCancelled,
+                            ExportWaitTimeout, submit_async_export)
 from ._clientcookie import request_host_lc as request_host
 # cookies
 from ._clientcookie import (Cookie, CookieJar, CookiePolicy,
@@ -55,6 +59,8 @@ del logger
 __all__ = [
     'AbstractBasicAuthHandler',
     'AbstractDigestAuthHandler',
+    'AsyncExportError',
+    'AsyncExportSpec',
     'BaseHandler',
     'Browser',
     'BrowserStateError',
@@ -65,6 +71,10 @@ __all__ = [
     'CookiePolicy',
     'DefaultCookiePolicy',
     'effective_request_host',
+    'ExportJob',
+    'ExportJobFailed',
+    'ExportWaitCancelled',
+    'ExportWaitTimeout',
     'FTPHandler',
     'Factory',
     'FileCookieJar',
@@ -122,6 +132,7 @@ __all__ = [
     # response_seek_wrapper()
     'seek_wrapped_response',
     'str2time',
+    'submit_async_export',
     'urlopen',
     'urlretrieve',
     'urljoin',

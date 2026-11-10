@@ -98,3 +98,30 @@ Miscellaneous
 
 .. automodule:: mechanize._html
    :members: content_parser
+
+Asynchronous exports
+---------------------
+
+Some servers answer an export form submission with ``202 Accepted`` and
+only later make the real attachment available.  The
+:mod:`mechanize._async_export` module models that flow explicitly: the
+form is submitted exactly once, the caller declares how to locate the
+status address and recognise success, failure and the result link, and
+the status address may then be polled without ever resubmitting the
+form.  Cancelling the wait is purely local and never pretends to revoke
+the remote job.
+
+.. autofunction:: mechanize.submit_async_export
+
+.. autoclass:: mechanize.AsyncExportSpec
+
+.. autoclass:: mechanize.ExportJob
+   :members:
+
+.. autoexception:: mechanize.AsyncExportError
+
+.. autoexception:: mechanize.ExportJobFailed
+
+.. autoexception:: mechanize.ExportWaitCancelled
+
+.. autoexception:: mechanize.ExportWaitTimeout
