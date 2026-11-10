@@ -1,5 +1,4 @@
 import hashlib
-import json
 from collections import defaultdict
 from html import unescape
 from urllib.parse import urljoin, urlparse
@@ -7,6 +6,16 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from autoscraper.rules import (
+    CURRENT_RULE_VERSION,
+    WRITABLE_VERSIONS,
+    build_document,
+    load_document,
+    migrate_file,
+    plan_migration,
+    runtime_rules,
+    write_document,
+)
 from autoscraper.utils import (
     FuzzyText,
     ResultItem,
@@ -36,8 +45,14 @@ class AutoScraper(object):
     get_result_similar() - Gets similar results based on the previously learned rules.
     get_result_exact() - Gets exact results based on the previously learned rules.
     get_results() - Gets exact and similar results based on the previously learned rules.
-    save() - Serializes the stack_list as JSON and saves it to disk.
-    load() - De-serializes the JSON representation of the stack_list and loads it back.
+    save() - Serializes the stack_list as a versioned JSON rule file and saves
+        it to disk atomically.
+    load() - Validates and de-serializes a rule file (legacy, v1 or v2) and
+        loads its rules back.
+    plan_rule_migration() - Builds the change manifest for migrating a rule
+        file without writing anything.
+    migrate_rule_file() - Migrates a rule file to a target versioned format in
+        a new file, optionally verifying exact/similar behavior on local pages.
     remove_rules() - Removes one or more learned rule[s] from the stack_list.
     keep_rules() - Keeps only the specified learned rules in the stack_list and removes the others.
     """
@@ -47,50 +62,89 @@ class AutoScraper(object):
             (KHTML, like Gecko) Chrome/84.0.4147.135 Safari/537.36"
     }
 
-    def __init__(self, stack_list=None):
+    def __init__(self, stack_list=None, rule_version=CURRENT_RULE_VERSION):
         self.stack_list = stack_list or []
+        self.rule_version = rule_version
 
-    def save(self, file_path):
+    def save(self, file_path, version=None):
         """
-        Serializes the stack_list as JSON and saves it to the disk.
+        Serializes the learned rules as a versioned JSON rule file and saves
+        it to the disk atomically.
 
         Parameters
         ----------
         file_path: str
             Path of the JSON output
 
+        version: int, optional
+            Rule format version to write. Defaults to the current version.
+            Use version 1 to write the first versioned format.
+
         Returns
         -------
         None
         """
 
-        data = dict(stack_list=self.stack_list)
-        with open(file_path, "w") as f:
-            json.dump(data, f)
+        target_version = self.rule_version if version is None else version
+        if target_version not in WRITABLE_VERSIONS:
+            # e.g. a legacy (v0) file was loaded; upgrade it on write instead
+            # of trying to emit the read-only legacy format.
+            target_version = CURRENT_RULE_VERSION
+        payload = build_document(self.stack_list, target_version)
+        write_document(file_path, payload)
 
     def load(self, file_path):
         """
-        De-serializes the JSON representation of the stack_list and loads it back.
+        Validates and de-serializes a rule file (legacy, v1 or v2) and loads
+        its rules into stack_list.
 
         Parameters
         ----------
         file_path: str
-            Path of the JSON file to load stack_list from.
+            Path of the JSON file to load the rules from.
 
         Returns
         -------
         None
         """
 
-        with open(file_path, "r") as f:
-            data = json.load(f)
+        document = load_document(file_path)
+        self.stack_list = runtime_rules(document)
+        self.rule_version = document.version
 
-        # for backward compatibility
-        if isinstance(data, list):
-            self.stack_list = data
-            return
+    @staticmethod
+    def plan_rule_migration(file_path, target_version=CURRENT_RULE_VERSION):
+        """
+        Builds the change manifest for migrating a rule file without writing
+        anything. The manifest records every per-rule change so the caller can
+        review it before a migration.
+        """
 
-        self.stack_list = data["stack_list"]
+        return plan_migration(load_document(file_path), target_version).to_dict()
+
+    @classmethod
+    def migrate_rule_file(
+        cls, src_path, dst_path, target_version=CURRENT_RULE_VERSION,
+        overwrite=False, pages=None,
+    ):
+        """
+        Migrates a rule file to a target versioned format.
+
+        The original file is never modified or overwritten: a new file is
+        written at dst_path. When local reference pages are supplied, exact and
+        similar results of the original and migrated rules are compared and the
+        verification report is returned alongside the change manifest. Cases
+        that cannot be proven equivalent are flagged for the caller instead of
+        being silently rewritten.
+        """
+
+        return migrate_file(
+            src_path,
+            dst_path,
+            target_version=target_version,
+            overwrite=overwrite,
+            pages=pages,
+        )
 
     @classmethod
     def _fetch_html(cls, url, request_args=None):

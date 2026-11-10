@@ -133,6 +133,81 @@ And to load:
 scraper.load('yahoo-finance')
 ```
 
+### Versioned rule files and migration
+
+Rule files are long-lived artifacts, so `save()` now writes a **versioned**
+document instead of an unversioned blob:
+
+```python
+scraper.save('rules.json')                 # writes the current format (v2)
+scraper.save('rules-v1.json', version=1)   # optionally pin an older format
+```
+
+The v2 document keeps each rule's identity, alias, attribute matching and
+positional path explicit:
+
+```json
+{
+  "format": "autoscraper-rules",
+  "version": 2,
+  "rules": [
+    {
+      "rule_id": "rule_ab12cd34",
+      "alias": "price",
+      "hash": "<sha256>",
+      "match": {
+        "wanted_attr": null,
+        "is_full_url": false,
+        "is_non_rec_text": false,
+        "url": ""
+      },
+      "path": [
+        {"tag": "ul", "attrs": {"class": "", "style": ""}, "position": 0},
+        {"tag": "li", "attrs": {"class": "", "style": ""}, "position": null}
+      ]
+    }
+  ]
+}
+```
+
+Old, unversioned files (a bare list or `{"stack_list": [...]}`) and v1 files
+still load with the same `load()` API. Loading an unknown version, a file with
+missing fields or self-contradictory descriptions (for example an `is_full_url`
+rule without a URL, or a `rule_id` that does not match its `hash`) raises
+`RuleFormatError`.
+
+#### Reviewing changes before migrating
+
+A migration never overwrites the original file. Review the change manifest
+first, then write to a **new** path. When local reference pages are supplied,
+exact/similar results of the old and migrated rules are compared on those
+pages; whatever cannot be proven equivalent is reported back for you to handle:
+
+```python
+from autoscraper import AutoScraper
+
+# 1. Inspect the change manifest without writing anything.
+plan = AutoScraper.plan_rule_migration('old-rules.json')
+
+# 2. Migrate to a new file and prove behavior on local reference pages.
+report = AutoScraper.migrate_rule_file(
+    'old-rules.json',
+    'rules-v2.json',
+    pages=[
+        {'html': local_html_string, 'url': 'https://example.com/page'},
+        another_local_html_string,
+    ],
+)
+
+print(report['plan'])         # source/target versions + per-rule changes
+print(report['verification']) # verified=True only if every mode matches
+```
+
+The verification compares `get_result_similar` (plain, sibling-leaf, grouped,
+alias-grouped and keep-order variants) and `get_result_exact` (plain and
+grouped) per page. With no reference pages the report stays unverified
+(`verified=False` with a reason), leaving the judgement to the caller.
+
 ## Tutorials
  
 - See [this gist](https://gist.github.com/alirezamika/72083221891eecd991bbc0a2a2467673) for more advanced usages.
