@@ -1,0 +1,73 @@
+name: Ubuntu
+
+permissions:
+  contents: read
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - python-version: "3.11"
+          env:
+            TOXENV: py
+        - python-version: "3.12"
+          env:
+            TOXENV: py
+        - python-version: "3.13"
+          env:
+            TOXENV: py
+        - python-version: "3.14"
+          env:
+            TOXENV: py
+        - python-version: "3.15"
+          env:
+            TOXENV: py
+        - python-version: pypy3.11
+          env:
+            TOXENV: pypy3
+        - python-version: "3.11"
+          env:
+            TOXENV: min-deps
+        - python-version: "3.11"
+          env:
+            TOXENV: min-deps-jsonpath-rfc9535
+        - python-version: "3.13"
+          env:
+            TOXENV: jsonpath-rfc9535
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install system libraries
+      if: contains(matrix.python-version, 'pypy')
+      run: |
+        sudo apt-get update
+        sudo apt-get install libxml2-dev libxslt-dev
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ matrix.python-version }}
+        allow-prereleases: true
+
+    - name: Run tests
+      env: ${{ matrix.env }}
+      run: |
+        pip install -U tox
+        tox
+
+    - name: Upload coverage report
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+
+    - name: Upload test results
+      if: ${{ !cancelled() }}
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      with:
+        report_type: test_results
