@@ -182,15 +182,33 @@ from .exceptions import (
     URLRequired,
 )
 from .models import PreparedRequest, Request, Response
+from .race import (
+    ABANDONED,
+    FAILED,
+    NOT_STARTED,
+    REJECTED,
+    WON,
+    AttemptRecord,
+    RaceError,
+    RaceResult,
+    race_read,
+)
 from .sessions import Session, session
 from .status_codes import codes
 
 __all__ = (
+    "ABANDONED",
+    "AttemptRecord",
     "ConnectionError",
     "ConnectTimeout",
+    "FAILED",
     "HTTPError",
     "JSONDecodeError",
+    "NOT_STARTED",
     "PreparedRequest",
+    "REJECTED",
+    "RaceError",
+    "RaceResult",
     "ReadTimeout",
     "Request",
     "RequestException",
@@ -199,6 +217,7 @@ __all__ = (
     "Timeout",
     "TooManyRedirects",
     "URLRequired",
+    "WON",
     "codes",
     "delete",
     "get",
@@ -208,6 +227,7 @@ __all__ = (
     "patch",
     "post",
     "put",
+    "race_read",
     "request",
     "session",
     "utils",

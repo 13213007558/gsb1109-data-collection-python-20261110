@@ -25,6 +25,55 @@ They all return an instance of the :class:`Response <Response>` object.
 .. autofunction:: patch
 .. autofunction:: delete
 
+
+Mirror Racing
+-------------
+
+When the same public data is served from several mirrors and the primary
+mirror occasionally stalls, :func:`race_read` offers an explicitly enabled
+racing entry point. It only accepts read requests that the caller declares
+safe to repeat (``idempotent=True``); the primary mirror is contacted
+immediately and each further mirror is started only after the short
+``delay``. A mirror wins only when its response passes the status check and,
+if given, the content check, so an early error response can never steal the
+result. Losing responses are closed and attempts that have not started when
+the race ends are never sent. The per-request ``timeout`` and the overall
+``budget`` are enforced independently, and the full attempt history is
+returned with the result or attached to :class:`~requests.RaceError`.
+
+.. code-block:: python
+
+    from requests import RaceError, race_read
+
+    def payload_is_valid(response):
+        return b"expected-dataset" in response.content
+
+    try:
+        result = race_read(
+            "GET",
+            ["https://primary.example/data", "https://backup.example/data"],
+            idempotent=True,
+            delay=0.25,
+            timeout=5,
+            budget=15,
+            content_validator=payload_is_valid,
+        )
+    except RaceError as exc:
+        print("no usable mirror", exc.attempts)
+    else:
+        print(result.winner, result.attempts)
+        data = result.response.content
+
+.. autofunction:: race_read
+
+.. autoclass:: requests.RaceResult
+   :inherited-members:
+
+.. autoclass:: requests.AttemptRecord
+   :inherited-members:
+
+.. autoexception:: requests.RaceError
+
 Exceptions
 ----------
 
