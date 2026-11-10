@@ -371,6 +371,47 @@ Alias for `itemadapter.adapter.ItemAdapter.get_field_meta_from_class`
 
 ---
 
+## Comparing records
+
+`itemadapter.compare_records(old, new, config)` compares two scraped records
+(of any supported item type) without modifying them, and returns an
+`itemadapter.CompareReport` aimed at change-notification pipelines:
+
+```python
+from itemadapter import CompareConfig, Tolerance, compare_records
+
+config = CompareConfig(
+    # Pair elements of the "offers" list by their "sku" business key
+    # instead of by position, so reordered crawls are not reported as
+    # changes. A callable extracting the key also works.
+    key_fields={"offers": "sku"},
+    # Accept price deviations up to 1% (or an absolute bound instead).
+    tolerances={"price": Tolerance(relative=0.01)},
+)
+report = compare_records(old_record, new_record, config)
+report.needs_notification  # True only if there is something worth pushing
+```
+
+The report contains:
+
+- `changes`: field-level `FieldChange` entries (`path`, `kind` being
+  `"added"`/`"removed"`/`"changed"`, `old`, `new`). Collection fields not
+  listed in `key_fields` are compared element by element, in order. A missing
+  field, `None` and an empty collection are three distinct states.
+- `pairings`: the pairing basis for keyed collections (`Pairing` entries with
+  the business key and the element indexes on both sides).
+- `issues`: `PairingIssue` entries for problems that prevent clean pairing,
+  reported separately instead of being paired arbitrarily:
+  `"duplicate_key"` (a business key appears more than once on either side;
+  those elements are left unpaired), `"missing_key"` (an element has no key
+  field), and `"incomparable_type"` (e.g. a collection compared against a
+  scalar, or a non-record element in a keyed collection).
+
+`needs_notification` is `True` when there are changes or issues; pure
+reordering of a keyed collection produces neither.
+
+---
+
 ## Metadata support
 
 `scrapy.item.Item`, `dataclass`, `attrs`, `pydantic` and `TypedDict` objects
