@@ -15,6 +15,7 @@ from lxml.html import HtmlElement
 
 from .cleaners import clean_attributes
 from .cleaners import html_cleaner
+from .blocks import extract_blocks
 from .htmls import build_doc
 from .htmls import get_body
 from .htmls import get_title
@@ -254,66 +255,101 @@ class Document:
         so it is better to call other API methods before this one.
         """
         try:
-            ruthless = True
-            while True:
-                self._html(True)
-                for i in self.tags(self.html, "script", "style", "noscript"):
-                    i.drop_tree()
-                for i in self.tags(self.html, "body"):
-                    i.set("id", "readabilityBody")
-                if ruthless:
-                    self.remove_unlikely_candidates()
-                self.transform_misused_divs_into_paragraphs()
-                candidates = self.score_paragraphs()
-
-                best_candidate = self.select_best_candidate(candidates)
-                if best_candidate:
-                    best_candidate = self.get_semantic_article_candidate(
-                        candidates, best_candidate
-                    )
-                    best_candidate = self.get_semantic_main_candidate(
-                        candidates, best_candidate
-                    )
-
-                if best_candidate:
-                    article = self.get_article(
-                        candidates, best_candidate, html_partial=html_partial
-                    )
-                else:
-                    if ruthless:
-                        log.info("ruthless removal did not work. ")
-                        ruthless = False
-                        log.debug(
-                            "ended up stripping too much - "
-                            "going for a safer _parse"
-                        )
-                        # try again
-                        continue
-                    else:
-                        log.debug(
-                            "Ruthless and lenient parsing did not work. "
-                            "Returning raw html"
-                        )
-                        article = self.html.find("body")
-                        if article is None:
-                            article = self.html
-                cleaned_article = self.sanitize(article, candidates, keep_all_images)
-
-                article_for_length = cleaned_article or ""
-                if self.xpath:
-                    article_for_length = re.sub(r' x="[^"]*"', "", article_for_length)
-                article_length = len(article_for_length)
-                retry_length = self.retry_length
-                of_acceptable_length = article_length >= retry_length
-                if ruthless and not of_acceptable_length:
-                    ruthless = False
-                    # Loop through and try again.
-                    continue
-                else:
-                    return cleaned_article
+            self._extract_article(
+                html_partial=html_partial, keep_all_images=keep_all_images
+            )
+            return self.get_clean_html()
         except Exception as e:
             log.exception("error getting summary: ")
             raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
+
+    def _extract_article(self, html_partial=False, keep_all_images=False):
+        """Run the shared extraction pipeline and return the sanitized tree.
+
+        Both :meth:`summary` and :meth:`structured_blocks` use this pipeline,
+        so the HTML string output and the structured blocks describe the very
+        same article.
+        """
+        ruthless = True
+        while True:
+            self._html(True)
+            for i in self.tags(self.html, "script", "style", "noscript"):
+                i.drop_tree()
+            for i in self.tags(self.html, "body"):
+                i.set("id", "readabilityBody")
+            if ruthless:
+                self.remove_unlikely_candidates()
+            self.transform_misused_divs_into_paragraphs()
+            candidates = self.score_paragraphs()
+
+            best_candidate = self.select_best_candidate(candidates)
+            if best_candidate:
+                best_candidate = self.get_semantic_article_candidate(
+                    candidates, best_candidate
+                )
+                best_candidate = self.get_semantic_main_candidate(
+                    candidates, best_candidate
+                )
+
+            if best_candidate:
+                article = self.get_article(
+                    candidates, best_candidate, html_partial=html_partial
+                )
+            else:
+                if ruthless:
+                    log.info("ruthless removal did not work. ")
+                    ruthless = False
+                    log.debug(
+                        "ended up stripping too much - "
+                        "going for a safer _parse"
+                    )
+                    continue
+                else:
+                    log.debug(
+                        "Ruthless and lenient parsing did not work. "
+                        "Returning raw html"
+                    )
+                    article = self.html.find("body")
+                    if article is None:
+                        article = self.html
+
+            cleaned_root = self.sanitize_tree(
+                article, candidates, keep_all_images
+            )
+
+            article_for_length = clean_attributes(
+                tounicode(cleaned_root, method="html")
+            )
+            if self.xpath:
+                article_for_length = re.sub(r' x="[^"]*"', "", article_for_length)
+            if ruthless and len(article_for_length) < self.retry_length:
+                ruthless = False
+                continue
+            return cleaned_root
+
+    def structured_blocks(self, html_partial=True, keep_all_images=False):
+        """Extract the article as ordered, nested structured blocks.
+
+        :param html_partial: use the partial article wrapper, matching
+                             ``summary(html_partial=True)``.
+        :param keep_all_images: keep all images in the extracted tree.
+
+        Returns a list of block dictionaries. Each block has a ``type`` and a
+        ``location`` (source tag, optional id and xpath). Headings, paragraphs
+        and list items keep their text plus ``inline`` link and inline-code
+        spans with character offsets. Code blocks keep verbatim whitespace and
+        lists keep nesting and explicit numbering. Unknown elements that carry
+        content are emitted as ``block`` containers instead of being dropped.
+        """
+        try:
+            root = self._extract_article(
+                html_partial=html_partial, keep_all_images=keep_all_images
+            )
+        except Exception as e:
+            log.exception("error getting structured blocks: ")
+            raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
+        source_tree = root.getroottree()
+        return extract_blocks(root, source_tree=source_tree)
 
     def get_article(self, candidates, best_candidate, html_partial=False):
         # Now that we have the top candidate, look through its siblings for
@@ -905,6 +941,11 @@ class Document:
         return allowed
 
     def sanitize(self, node, candidates, keep_all_images=False):
+        self.sanitize_tree(node, candidates, keep_all_images)
+        return self.get_clean_html()
+
+    def sanitize_tree(self, node, candidates, keep_all_images=False):
+        """Like :meth:`sanitize`, but returns the cleaned tree instead of HTML."""
         MIN_LEN = self.min_text_length
         for header in self.tags(node, "h1", "h2", "h3", "h4", "h5", "h6"):
             if self.class_weight(header) < 0 or self.get_link_density(header) > 0.33:
@@ -1088,7 +1129,7 @@ class Document:
                     )
 
         self.html = node
-        return self.get_clean_html()
+        return node
 
 
 def main():
