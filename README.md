@@ -161,7 +161,21 @@ The following adapters are included by default:
 * `itemadapter.adapter.AttrsAdapter`: handles `attrs` objects
 * `itemadapter.adapter.PydanticAdapter`: handles `pydantic` objects
 
-### class `itemadapter.adapter.ItemAdapter(item: Any)`
+### class `itemadapter.adapter.AdapterRegistry(adapter_classes: Iterable)`
+
+An ordered, immutable collection of adapter classes. The first adapter class
+in the registry that handles an item class is the one used for it, so the
+order of the adapter classes defines their priority.
+
+Each registry keeps its own cache of which adapter class handles each item
+class. That cache is never shared between registries: a match cached for one
+registry is never reused through another one, and creating or changing other
+registries never affects a registry that is already in use. Registries are
+immutable, so the view of a batch of items handled through a given registry
+stays fixed for the whole batch. To use different adapter classes or a
+different priority, build a new registry and pass it to the new batch.
+
+### class `itemadapter.adapter.ItemAdapter(item: Any, adapter_registry: AdapterRegistry | None = None)`
 
 This is the main entrypoint for the package. Tipically, user code
 wraps an item using this class, and proceeds to handle it with the provided interface.
@@ -169,6 +183,16 @@ wraps an item using this class, and proceeds to handle it with the provided inte
 [`MutableMapping`](https://docs.python.org/3/library/collections.abc.html#collections.abc.MutableMapping)
 interface, providing a `dict`-like API to manipulate data for the object it wraps
 (which is modified in-place).
+
+When `adapter_registry` is given, the item is matched against the adapter
+classes of that registry instead of the registry of the `ItemAdapter` class.
+This makes it possible to handle the same item class with different field
+views in different parts of the same code base (e.g. one collection plugin per
+registry) without changing any global state. The registry used by an adapter is
+available through its `adapter_registry` attribute, and stays fixed for the
+lifetime of the adapter. When the argument is omitted, the registry associated
+with the `ItemAdapter` (sub)class is used, see
+[local adapter registries](#local-adapter-registries) below.
 
 **Attributes**
 
@@ -186,8 +210,10 @@ The default implementation is a `tuple`, but any other iterable (e.g. `list`,
 [`collections.deque`](https://docs.python.org/3/library/collections.html#collections.deque))
 will work.
 
-Which adapter class handles a given item class is cached, so `is_item_class` must
-return the same result every time it is called with the same item class.
+Which adapter class handles a given item class is cached on the adapter
+registry, so `is_item_class` must return the same result every time it is
+called with the same item class. The cache is local to each registry: matches
+cached for one registry are never reused through another one.
 
 **Methods**
 
@@ -577,6 +603,103 @@ False
 True
 >>>
 ```
+
+### Local adapter registries
+
+Subclassing `ItemAdapter` and reassigning `ADAPTER_CLASSES` changes global
+state, which is not appropriate when different parts of the same application
+(e.g. two collection plugins) must handle the same item class through
+different field views, without one plugin changing the priority seen by the
+other. For those cases, build an `AdapterRegistry` and pass it to the
+`ItemAdapter` constructor through the `adapter_registry` argument:
+
+```python
+>>> from collections.abc import Iterator, KeysView
+>>> from itemadapter.adapter import AdapterInterface, AdapterRegistry, ItemAdapter
+>>>
+>>> class Record:
+...     def __init__(self, values):
+...         self.values = values
+...
+>>> class _RecordAdapter(AdapterInterface):
+...     fields: tuple[str, ...] = ()
+...     @classmethod
+...     def is_item_class(cls, item_class):
+...         return issubclass(item_class, Record)
+...     @classmethod
+...     def get_field_names_from_class(cls, item_class):
+...         return list(cls.fields)
+...     def field_names(self):
+...         return KeysView(dict.fromkeys(self.fields))
+...     def __getitem__(self, field_name):
+...         return self.item.values[field_name]
+...     def __setitem__(self, field_name, value):
+...         self.item.values[field_name] = value
+...     def __delitem__(self, field_name):
+...         del self.item.values[field_name]
+...     def __iter__(self) -> Iterator[str]:
+...         return iter(name for name in self.fields if name in self.item.values)
+...     def __len__(self):
+...         return len(list(iter(self)))
+...
+>>> class PublicRecordAdapter(_RecordAdapter):
+...     fields = ("id", "name")
+...
+>>> class FullRecordAdapter(_RecordAdapter):
+...     fields = ("id", "name", "handle")
+...
+>>> public_registry = AdapterRegistry([PublicRecordAdapter])
+>>> full_registry = AdapterRegistry([FullRecordAdapter])
+>>> record = Record({"id": 1, "name": "foo", "handle": "bar"})
+>>> public = ItemAdapter(record, adapter_registry=public_registry)
+>>> full = ItemAdapter(record, adapter_registry=full_registry)
+>>> list(public.field_names())
+['id', 'name']
+>>> list(full.field_names())
+['id', 'name', 'handle']
+>>> full["handle"]
+'bar'
+>>> public.adapter_registry is public_registry
+True
+```
+
+The two registries have independent caches: the adapter class matched for an
+item class through one registry is never reused through the other one, even
+when both registries contain adapters that handle that item class. A registry
+is immutable, so a batch of items handled through it keeps the same view for
+its whole lifetime; registering adapters elsewhere, or creating other
+registries while the batch is being processed, never makes an existing
+adapter switch to a different adapter class.
+
+Each `ItemAdapter` class is itself backed by a registry, available through
+the `get_adapter_registry()` class method. A subclass that does not define
+its own `ADAPTER_CLASSES` attribute inherits the registry of its closest
+parent class that does:
+
+```python
+>>> class InheritingItemAdapter(ItemAdapter):
+...     pass
+...
+>>> InheritingItemAdapter.get_adapter_registry() is ItemAdapter.get_adapter_registry()
+True
+```
+
+Defining `ADAPTER_CLASSES` on a subclass gives it a separate registry that
+fully overrides the inherited one, it never extends it:
+
+```python
+>>> class FullItemAdapter(ItemAdapter):
+...     ADAPTER_CLASSES = [FullRecordAdapter]
+...
+>>> list(FullItemAdapter(record).field_names())
+['id', 'name', 'handle']
+```
+
+Reassigning `ADAPTER_CLASSES` on an existing class rebuilds the registry for
+that class and the subclasses that inherit it; adapters created before the
+reassignment keep using their own, unchanged registry. The default global
+entrypoint, `ItemAdapter(item)` without an `adapter_registry` argument, keeps
+using the registry of the `ItemAdapter` class and works as before.
 
 ---
 

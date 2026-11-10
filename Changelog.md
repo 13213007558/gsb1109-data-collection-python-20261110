@@ -1,5 +1,28 @@
 # Changelog
 
+### 0.15.0 (unreleased)
+
+Added the `itemadapter.adapter.AdapterRegistry` class: an ordered, immutable
+collection of adapter classes, each with its own cache of the adapter class
+that handles each item class. An `AdapterRegistry` can be passed to
+`ItemAdapter` through the new `adapter_registry` argument, so different parts
+of an application (e.g. two collection plugins) can handle the same item
+class through different field views and priorities without changing any global
+state or reusing each other's cached matches.
+
+The adapter class matched for an item is now cached per registry instead of in
+a single, module-level cache. A registry is immutable, so a batch of items
+handled through it keeps a fixed view: registering adapters elsewhere never
+makes an existing adapter switch to a different adapter class.
+
+Each `ItemAdapter` class is backed by its own registry, available through the
+new `get_adapter_registry()` class method. Subclasses inherit the registry of
+their closest parent that defines `ADAPTER_CLASSES`, while defining
+`ADAPTER_CLASSES` on a subclass fully overrides (never extends) the inherited
+registry. Reassigning `ADAPTER_CLASSES` at run time rebuilds that registry,
+and adapters created beforehand keep using their own, unchanged registry. The
+default `ItemAdapter(item)` entrypoint keeps working as before.
+
 ### 0.14.0 (2026-10-29)
 
 Removed support for Python 3.9 and 3.10, and added support for Python 3.15

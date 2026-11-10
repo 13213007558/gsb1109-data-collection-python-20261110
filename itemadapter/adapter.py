@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+import weakref
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable, Iterator, KeysView, MutableMapping
 from functools import lru_cache
@@ -28,6 +29,7 @@ from itemadapter._utils import (
 
 __all__ = [
     "AdapterInterface",
+    "AdapterRegistry",
     "AttrsAdapter",
     "DataclassAdapter",
     "DictAdapter",
@@ -368,16 +370,124 @@ def _has_item_overrides(adapter_classes: tuple[type[AdapterInterface], ...]) -> 
     return bool(overriding)
 
 
-@lru_cache(maxsize=1024)
-def _find_adapter_class(
-    adapter_classes: tuple[type[AdapterInterface], ...], item_class: type
-) -> tuple[type[AdapterInterface] | None, bool]:
-    """Return the first of the given adapter classes that handles the given item
-    class, or None, along with the return value of _has_item_overrides()."""
-    for adapter_class in adapter_classes:
-        if adapter_class.is_item_class(item_class):
-            return adapter_class, _has_item_overrides(adapter_classes)
-    return None, _has_item_overrides(adapter_classes)
+class AdapterRegistry:
+    """An ordered, immutable collection of adapter classes.
+
+    Registries hold the adapter classes that :class:`ItemAdapter` uses to match
+    items to adapters, in order of priority: the first adapter class whose
+    :meth:`~AdapterInterface.is_item_class` method handles an item class is the
+    one used for it. Each registry keeps its own match cache, so registering
+    adapters on one registry never changes the matches cached for another one,
+    and the adapter class resolved for a batch of items stays fixed for the
+    lifetime of the registry even if other registries are created or changed in
+    the meantime.
+
+    Registries are immutable: there is no way to add or remove adapter classes
+    after creation. To change the registered adapter classes, create a new
+    registry (e.g. a subclass of :class:`ItemAdapter` with a different
+    ``ADAPTER_CLASSES`` attribute gets its own registry) and use it for the new
+    batch of items.
+    """
+
+    __slots__ = ("_adapter_classes", "_cache", "_has_overrides")
+
+    def __init__(self, adapter_classes: Iterable[type[AdapterInterface]]) -> None:
+        self._adapter_classes: tuple[type[AdapterInterface], ...] = tuple(adapter_classes)
+        self._cache: dict[type, type[AdapterInterface] | None] = {}
+        self._has_overrides: bool | None = None
+
+    @property
+    def adapter_classes(self) -> tuple[type[AdapterInterface], ...]:
+        """The adapter classes registered in this registry, in priority order."""
+        return self._adapter_classes
+
+    def has_item_overrides(self) -> bool:
+        """Return True if any registered adapter class overrides ``is_item()``.
+
+        Such adapters decide on an item basis and hence disable matching items
+        by item class alone.
+        """
+        if self._has_overrides is None:
+            self._has_overrides = _has_item_overrides(self._adapter_classes)
+        return self._has_overrides
+
+    def find_adapter_class(self, item_class: type) -> type[AdapterInterface] | None:
+        """Return the registered adapter class that handles ``item_class``.
+
+        The first matching adapter class in priority order is returned, or
+        ``None`` if none of the registered adapter classes handles the item
+        class. The result is cached within this registry only.
+        """
+        try:
+            return self._cache[item_class]
+        except KeyError:
+            adapter_class = next(
+                (
+                    candidate_class
+                    for candidate_class in self._adapter_classes
+                    if candidate_class.is_item_class(item_class)
+                ),
+                None,
+            )
+            self._cache[item_class] = adapter_class
+            return adapter_class
+
+    def is_item(self, item: object) -> bool:
+        """Return True if any of the registered adapter classes handles the item."""
+        if self.has_item_overrides():
+            return any(adapter_class.is_item(item) for adapter_class in self)
+        return self.find_adapter_class(item.__class__) is not None
+
+    def cache_clear(self) -> None:
+        """Drop the item-class matches cached by this registry."""
+        self._cache.clear()
+        self._has_overrides = None
+
+    def __iter__(self) -> Iterator[type[AdapterInterface]]:
+        return iter(self._adapter_classes)
+
+    def __len__(self) -> int:
+        return len(self._adapter_classes)
+
+    def __repr__(self) -> str:
+        names = ", ".join(adapter_class.__qualname__ for adapter_class in self._adapter_classes)
+        return f"{self.__class__.__name__}([{names}])"
+
+
+# For each ItemAdapter class that defines its own ADAPTER_CLASSES attribute,
+# the registry built from that attribute, together with the exact object it was
+# built from. A weak reference keeps classes that are redefined (e.g. when
+# re-running test modules) from retaining their stale registries forever.
+_ADAPTER_REGISTRIES: weakref.WeakKeyDictionary[
+    type[ItemAdapter], tuple[Iterable[type[AdapterInterface]], AdapterRegistry]
+] = weakref.WeakKeyDictionary()
+
+
+def _get_adapter_registry(adapter_cls: type[ItemAdapter]) -> AdapterRegistry:
+    """Return the registry for ``adapter_cls``.
+
+    A class that defines its own ``ADAPTER_CLASSES`` attribute gets its own
+    registry, built from that attribute: defining the attribute on a subclass
+    fully overrides the registry inherited from its parent, it never extends it.
+    A class without its own attribute inherits the registry of the closest
+    parent class that defines one.
+
+    The registry is rebuilt if the ``ADAPTER_CLASSES`` attribute is reassigned
+    at run time, while registries already in use keep their own, fixed view.
+    Each class keeps its own registry and its own match cache, so matches cached
+    for one registry can never be reused through another one.
+    """
+    own_classes = adapter_cls.__dict__.get("ADAPTER_CLASSES")
+    if own_classes is not None:
+        entry = _ADAPTER_REGISTRIES.get(adapter_cls)
+        if entry is None or entry[0] is not own_classes:
+            entry = (own_classes, AdapterRegistry(own_classes))
+            _ADAPTER_REGISTRIES[adapter_cls] = entry
+        return entry[1]
+    for base in adapter_cls.__mro__[1:]:
+        if base.__dict__.get("ADAPTER_CLASSES") is not None:
+            return _get_adapter_registry(base)
+    raise RuntimeError(f"No adapter registry found for {adapter_cls!r}")
 
 
 class ItemAdapter(MutableMapping[str, Any]):
@@ -393,37 +503,45 @@ class ItemAdapter(MutableMapping[str, Any]):
         PydanticAdapter,
     )
 
-    def __init__(self, item: Any) -> None:
-        adapter_classes = tuple(self.ADAPTER_CLASSES)
-        adapter_class, item_overrides = _find_adapter_class(adapter_classes, item.__class__)
-        if item_overrides:
+    def __init__(self, item: Any, adapter_registry: AdapterRegistry | None = None) -> None:
+        registry = (
+            adapter_registry
+            if adapter_registry is not None
+            else _get_adapter_registry(self.__class__)
+        )
+        adapter_class = registry.find_adapter_class(item.__class__)
+        if adapter_class is None or registry.has_item_overrides():
             adapter_class = next(
-                (
-                    candidate_class
-                    for candidate_class in adapter_classes
-                    if candidate_class.is_item(item)
-                ),
+                (candidate_class for candidate_class in registry if candidate_class.is_item(item)),
                 None,
             )
         if adapter_class is None:
             raise TypeError(f"No adapter found for objects of type: {type(item)} ({item})")
         self.adapter = adapter_class(item)
+        self.adapter_registry = registry
+
+    @classmethod
+    def get_adapter_registry(cls) -> AdapterRegistry:
+        """Return the adapter registry used by this class.
+
+        Classes defining their own ``ADAPTER_CLASSES`` attribute have a registry
+        of their own, other classes inherit the registry of their closest parent
+        with one. Pass the result as the ``adapter_registry`` argument to handle
+        a batch of items with a fixed, local set of adapter classes.
+        """
+        return _get_adapter_registry(cls)
 
     @classmethod
     def is_item(cls, item: Any) -> bool:
-        adapter_classes = tuple(cls.ADAPTER_CLASSES)
-        adapter_class, item_overrides = _find_adapter_class(adapter_classes, item.__class__)
-        if item_overrides:
-            return any(adapter_class.is_item(item) for adapter_class in adapter_classes)
-        return adapter_class is not None
+        return _get_adapter_registry(cls).is_item(item)
 
     @classmethod
     def is_item_class(cls, item_class: type) -> bool:
-        return _find_adapter_class(tuple(cls.ADAPTER_CLASSES), item_class)[0] is not None
+        return _get_adapter_registry(cls).find_adapter_class(item_class) is not None
 
     @classmethod
     def _get_adapter_class(cls, item_class: type) -> type[AdapterInterface]:
-        adapter_class = _find_adapter_class(tuple(cls.ADAPTER_CLASSES), item_class)[0]
+        adapter_class = _get_adapter_registry(cls).find_adapter_class(item_class)
         if adapter_class is None:
             raise TypeError(f"{item_class} is not a valid item class")
         return adapter_class
@@ -483,16 +601,19 @@ class ItemAdapter(MutableMapping[str, Any]):
         """Return a dict object with the contents of the adapter. This works slightly different
         than calling `dict(adapter)`: it's applied recursively to nested items (if there are any).
         """
-        return {key: self._asdict(value) for key, value in self.items()}
+        return {key: self._asdict(value, self.adapter_registry) for key, value in self.items()}
 
     @classmethod
-    def _asdict(cls, obj: object) -> object:
+    def _asdict(cls, obj: object, adapter_registry: AdapterRegistry | None = None) -> object:
         if isinstance(obj, dict):
-            return {key: cls._asdict(value) for key, value in obj.items()}
+            return {key: cls._asdict(value, adapter_registry) for key, value in obj.items()}
         if isinstance(obj, (list, set, tuple)):
-            return obj.__class__(cls._asdict(x) for x in obj)
+            return obj.__class__(cls._asdict(x, adapter_registry) for x in obj)
         if isinstance(obj, cls):
             return obj.asdict()
-        if cls.is_item(obj):
+        if adapter_registry is not None:
+            if adapter_registry.is_item(obj):
+                return cls(obj, adapter_registry=adapter_registry).asdict()
+        elif cls.is_item(obj):
             return cls(obj).asdict()
         return obj
