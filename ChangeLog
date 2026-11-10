@@ -1,6 +1,14 @@
 This isn't really in proper GNU ChangeLog format, it just happens to
 look that way.
 
+2026-11-10
+	* Add caller-triggered cancellation of browser operations via the
+	cancel_token argument to Browser.open()/submit()/follow_link()/reload().
+	Cancellation is checked before navigation, after waiting for the
+	response, and while reading the response body, and raises
+	mechanize.BrowserCancelled. Responses in flight are closed so they do
+	not keep holding the connection.
+
 2024-04-26 Kovid Goyal
 	* 0.4.10 release
 	* Fix overly long MIME multipart separator on 64 bit systems

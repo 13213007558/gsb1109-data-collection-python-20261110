@@ -3,6 +3,8 @@ from __future__ import absolute_import
 import logging
 
 from ._clientcookie import request_host_lc as request_host
+# cancellation
+from ._cancel import BrowserCancelled, CancellationToken
 # cookies
 from ._clientcookie import (Cookie, CookieJar, CookiePolicy,
                             DefaultCookiePolicy, FileCookieJar, LoadError,
@@ -57,8 +59,10 @@ __all__ = [
     'AbstractDigestAuthHandler',
     'BaseHandler',
     'Browser',
+    'BrowserCancelled',
     'BrowserStateError',
     'CacheFTPHandler',
+    'CancellationToken',
     'ContentTooShortError',
     'Cookie',
     'CookieJar',

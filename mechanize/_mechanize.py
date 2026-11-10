@@ -14,7 +14,7 @@ import copy
 import os
 import re
 
-from . import _request, _response, _rfc3986, _sockettimeout, _urllib2_fork
+from . import _cancel, _request, _response, _rfc3986, _sockettimeout, _urllib2_fork
 from ._clientcookie import Cookie
 from ._headersutil import normalize_header_name
 from ._html import Factory
@@ -225,7 +225,8 @@ class Browser(UserAgentBase):
     def open_novisit(self,
                      url_or_request,
                      data=None,
-                     timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT):
+                     timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT,
+                     cancel_token=None):
         """Open a URL without visiting it.
 
         Browser state (including request, response, history, forms and links)
@@ -239,12 +240,14 @@ class Browser(UserAgentBase):
 
         """
         return self._mech_open(
-            url_or_request, data, visit=False, timeout=timeout)
+            url_or_request, data, visit=False, timeout=timeout,
+            cancel_token=cancel_token)
 
     def open(self,
              url_or_request,
              data=None,
-             timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT):
+             timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT,
+             cancel_token=None):
         '''
         Open a URL. Loads the page so that you can subsequently use
         :meth:`forms()`, :meth:`links()`, etc. on it.
@@ -252,16 +255,24 @@ class Browser(UserAgentBase):
         :param url_or_request: Either a URL or a :class:`mechanize.Request`
         :param dict data: data to send with a POST request
         :param timeout: Timeout in seconds
+        :param cancel_token: An optional :class:`mechanize.CancellationToken`.
+            If the token is cancelled before the request is sent, while
+            waiting for the response, or while reading the response body,
+            :class:`mechanize.BrowserCancelled` is raised and any response
+            file object already held is closed so it does not keep holding
+            the connection.
         :return: A :class:`mechanize.Response` object
         '''
-        return self._mech_open(url_or_request, data, timeout=timeout)
+        return self._mech_open(
+            url_or_request, data, timeout=timeout, cancel_token=cancel_token)
 
     def _mech_open(self,
                    url,
                    data=None,
                    update_history=True,
                    visit=None,
-                   timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT):
+                   timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT,
+                   cancel_token=None):
         try:
             url.get_full_url
         except AttributeError:
@@ -278,6 +289,12 @@ class Browser(UserAgentBase):
         visit = request.visit
         if visit is None:
             visit = True
+
+        if cancel_token is not None:
+            # cancelled before the next navigation starts: do not touch
+            # browser state and do not send anything to the server
+            cancel_token.raise_if_cancelled(
+                "before_request", request, request_sent=False)
 
         if visit:
             self._visit_request(request, update_history)
@@ -302,6 +319,22 @@ class Browser(UserAgentBase):
 #             Python core, a fix would need some backwards-compat. hack to be
 #             acceptable.
 #             raise
+
+        if cancel_token is not None:
+            try:
+                # the request was already sent, so any remote side effects
+                # cannot be undone -- only the local wait is aborted
+                cancel_token.raise_if_cancelled(
+                    "waiting_response", request, request_sent=True)
+            except _cancel.BrowserCancelled:
+                if response is not None:
+                    # release the connection held by the unread response
+                    response.close()
+                raise
+            # abort body reads (and close the underlying file object) if
+            # cancellation is triggered while the response is being read
+            response = _cancel.wrap_response_fp(response, cancel_token,
+                                                request)
 
         if visit:
             self._set_response(response, False)
@@ -399,13 +432,14 @@ class Browser(UserAgentBase):
             raise BrowserStateError("not viewing any document")
         return self._response.geturl()
 
-    def reload(self):
+    def reload(self, cancel_token=None):
         """Reload current document, and return response object."""
         if self.request is None:
             raise BrowserStateError("no URL has yet been .open()ed")
         if self._response is not None:
             self._response.close()
-        return self._mech_open(self.request, update_history=False)
+        return self._mech_open(
+            self.request, update_history=False, cancel_token=cancel_token)
 
     def back(self, n=1):
         """Go back n steps in history, and return response object.
@@ -690,11 +724,15 @@ class Browser(UserAgentBase):
     def submit(self, *args, **kwds):
         """Submit current form.
 
-        Arguments are as for :meth:`mechanize.HTMLForm.click()`.
+        Arguments are as for :meth:`mechanize.HTMLForm.click()`.  An
+        additional keyword argument `cancel_token` may be supplied; see
+        :meth:`open()`.
 
         Return value is same as for :meth:`open()`.
         """
-        return self.open(self.click(*args, **kwds))
+        cancel_token = kwds.pop("cancel_token", None)
+        return self.open(
+            self.click(*args, **kwds), cancel_token=cancel_token)
 
     def click_link(self, link=None, **kwds):
         """Find a link and return a Request object for it.
@@ -714,15 +752,17 @@ class Browser(UserAgentBase):
         request = self.request_class(link.absolute_url)
         return self._add_referer_header(request)
 
-    def follow_link(self, link=None, **kwds):
+    def follow_link(self, link=None, cancel_token=None, **kwds):
         """Find a link and :meth:`open()` it.
 
-        Arguments are as for :meth:`click_link()`.
+        Arguments are as for :meth:`click_link()`.  An additional keyword
+        argument `cancel_token` may be supplied; see :meth:`open()`.
 
         Return value is same as for :meth:`open()`.
 
         """
-        return self.open(self.click_link(link, **kwds))
+        return self.open(
+            self.click_link(link, **kwds), cancel_token=cancel_token)
 
     def find_link(self,
                   text=None,

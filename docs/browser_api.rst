@@ -23,6 +23,22 @@ The Browser
    :members:
    :inherited-members:
 
+Cancellation
+--------------
+
+Multi-step browser operations such as :meth:`mechanize.Browser.open`,
+:meth:`mechanize.Browser.submit` and :meth:`mechanize.Browser.follow_link`
+accept a ``cancel_token`` keyword argument.  Cancellation is checked before
+the next navigation starts, after waiting for the response, and while
+reading the response body; in the latter two cases the response file object
+is closed so it does not keep holding the connection.
+
+.. autoclass:: mechanize.CancellationToken
+   :members:
+
+.. autoclass:: mechanize.BrowserCancelled
+   :members:
+
 The Request
 --------------
 
