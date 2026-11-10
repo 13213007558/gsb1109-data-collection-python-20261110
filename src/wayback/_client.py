@@ -14,8 +14,10 @@ Other potentially useful links:
 """
 
 from base64 import b32encode
+from collections import deque
 from datetime import date, timedelta
 import hashlib
+from html.parser import HTMLParser
 import logging
 import re
 import requests
@@ -28,12 +30,12 @@ from requests.exceptions import (
     Timeout,
 )
 import time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urldefrag
 from urllib3.connectionpool import HTTPConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutError
 from warnings import warn
 from . import _utils, __version__
-from ._models import CdxRecord, Memento, Mode
+from ._models import CdxRecord, Memento, Mode, CrawlEdge, CrawlResult, SkippedLink
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
@@ -167,6 +169,114 @@ def detect_view_mode_redirect(response, current_date):
             )
 
     return None
+
+
+class _PageLinkParser(HTMLParser):
+    """
+    Extract ``href`` values from ``<a>`` tags and the document's ``<base>``
+    URL (if any) from an HTML document.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs = []
+        self.base = None
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == 'a':
+            href = attributes.get('href')
+            if href:
+                self.hrefs.append(href)
+        elif tag == 'base' and self.base is None:
+            self.base = attributes.get('href') or None
+
+
+def resolve_historical_link(href, base_url):
+    """
+    Resolve a link found on an archived page into an absolute, non-Wayback
+    URL, or return ``None`` if the link is not fetchable (e.g. a ``mailto:``
+    or ``javascript:`` URL).
+
+    Links that Wayback rewrote to point at the Wayback Machine (as it does
+    for subresources and links in ``view`` mode) are unwrapped back to the
+    original URL they were captured from. The returned URL is always a
+    "live web" URL -- it is up to the caller to fetch it from the archive
+    within an appropriate time window.
+
+    Parameters
+    ----------
+    href : str
+        The raw value of a link's ``href`` attribute.
+    base_url : str
+        The URL of the page the link was found on, used to resolve
+        relative links.
+
+    Returns
+    -------
+    str or None
+    """
+    href = href.strip()
+    if not href:
+        return None
+
+    if href.startswith('/web/') or _utils.MEMENTO_URL_PATTERN.match(href):
+        # The link points at a Wayback memento (e.g. because the page was
+        # fetched in `view` mode). Unwrap it to get the original URL. The
+        # memento's own timestamp is deliberately discarded here -- callers
+        # must select a capture within their allowed time window instead of
+        # trusting whatever timestamp was embedded in the page.
+        try:
+            href, _, _ = _utils.memento_url_data(urljoin('https://web.archive.org/', href))
+        except ValueError:
+            return None
+    else:
+        href = urljoin(base_url, href)
+
+    link, _fragment = urldefrag(href)
+    if is_malformed_url(link):
+        return None
+
+    return link
+
+
+def extract_page_links(memento):
+    """
+    Get the absolute URLs of all links in an HTML memento. Links are
+    resolved against the memento's own URL (or its ``<base>`` URL, if the
+    page has one), and Wayback-rewritten links are unwrapped to the
+    original URLs they point at. Returns an empty list for non-HTML
+    mementos.
+
+    Parameters
+    ----------
+    memento : wayback.Memento
+
+    Returns
+    -------
+    list of str
+    """
+    content_type = memento.headers.get('content-type', '')
+    if 'html' not in content_type.lower():
+        return []
+
+    parser = _PageLinkParser()
+    parser.feed(memento.text)
+    parser.close()
+
+    base_url = memento.url
+    if parser.base:
+        base_url = urljoin(base_url, parser.base)
+
+    links = []
+    seen = set()
+    for href in parser.hrefs:
+        link = resolve_historical_link(href, base_url)
+        if link and link not in seen:
+            seen.add(link)
+            links.append(link)
+
+    return links
 
 
 def clean_memento_links(links, mode):
@@ -1107,3 +1217,175 @@ class WaybackClient(_utils.DepthCountedContext):
                 break
 
         return memento
+
+    def _closest_capture_in_window(self, url, window_start, window_end, target_time):
+        """
+        Find the capture of ``url`` that is closest to ``target_time``,
+        considering only captures between ``window_start`` and
+        ``window_end`` (inclusive). Returns a :class:`CdxRecord` or ``None``
+        if the URL has no captures within the window.
+        """
+        closest = None
+        for record in self.search(url, from_date=window_start, to_date=window_end):
+            if closest is None or abs(record.timestamp - target_time) < abs(closest.timestamp - target_time):
+                closest = record
+        return closest
+
+    def _has_any_capture(self, url):
+        "Determine whether a URL has any captures in the archive at all."
+        return any(True for _ in self.search(url, limit=1))
+
+    def crawl(
+        self,
+        url,
+        timestamp,
+        *,
+        window=timedelta(hours=24),
+        max_pages=100,
+        same_site=True,
+        mode=Mode.original,
+    ):
+        """
+        Traverse historical links starting from a page at a point in time,
+        fetching a capture within a limited time window for every page.
+
+        When you follow a link from an old page, the Wayback Machine's
+        default behavior is to serve the *closest* capture of the linked
+        URL, which can easily be months or years away from the page you
+        started on. This method instead picks, for every linked URL, the
+        capture closest to ``timestamp`` that falls within ``window`` of
+        it. URLs with no capture inside the window are not fetched, so the
+        resulting set of pages is temporally consistent within the window.
+
+        The result is **not** a complete snapshot of the site at a single
+        moment: each page is represented by its own capture at its own time
+        (all within the window), and some linked pages may be missing. The
+        returned :class:`CrawlResult` keeps every discovered link as an
+        edge along with the capture time of its target, so you can see
+        exactly how consistent (or not) the traversal is.
+
+        Parameters
+        ----------
+        url : str
+            The URL to start traversing from.
+        timestamp : datetime.datetime or datetime.date or str
+            The point in time to traverse around. Every fetched page is
+            captured within ``window`` of this time.
+        window : datetime.timedelta or int or float, default: 24 hours
+            The maximum allowed distance between ``timestamp`` and the
+            capture time of any fetched page (in seconds if a number).
+        max_pages : int, default: 100
+            The maximum number of pages to fetch. Set to ``None`` for no
+            limit (careful: traversals can be huge).
+        same_site : bool, default: True
+            If true, links to URLs on a different host than ``url`` are not
+            followed. They are recorded in the result's ``skipped`` list
+            with the reason ``'offsite'``.
+        mode : wayback.Mode or str, default: wayback.Mode.original
+            The playback mode to fetch pages in. Links are followed
+            correctly regardless of mode: Wayback-rewritten links (as found
+            in ``view`` mode pages) are unwrapped to their original URLs,
+            and every linked URL is fetched from the archive within the
+            time window -- links are never resolved against the live web,
+            and timestamps embedded in rewritten links are never used to
+            bypass the window.
+
+        Returns
+        -------
+        CrawlResult
+            A :class:`CrawlResult` with the fetched pages (all captured
+            within the window), the discovered link edges (with capture
+            times), and the URLs that were skipped (categorized as
+            ``'offsite'``, ``'out_of_window'``, ``'no_memento'``, or
+            ``'error'``).
+        """
+        target_time = _utils.ensure_utc_datetime(timestamp)
+        if isinstance(window, timedelta):
+            window_seconds = window.total_seconds()
+        elif isinstance(window, (int, float)):
+            window_seconds = float(window)
+        else:
+            raise TypeError(f'`window` must be a datetime.timedelta or a number of seconds (received {window!r})')
+        window_seconds = abs(window_seconds)
+        window_delta = timedelta(seconds=window_seconds)
+        window_start = target_time - window_delta
+        window_end = target_time + window_delta
+
+        start_url = urldefrag(url)[0]
+        start_host = urlparse(start_url).hostname
+
+        pages = {}
+        edge_pairs = []
+        seen_edges = set()
+        skipped = []
+        seen_skips = set()
+
+        def record_skip(skip_url, reason):
+            key = (skip_url, reason)
+            if key not in seen_skips:
+                seen_skips.add(key)
+                skipped.append(SkippedLink(url=skip_url, reason=reason))
+
+        queue = deque([start_url])
+        known_urls = {start_url}
+
+        while queue and (max_pages is None or len(pages) < max_pages):
+            current_url = queue.popleft()
+
+            try:
+                record = self._closest_capture_in_window(current_url, window_start, window_end, target_time)
+                if record is None:
+                    if self._has_any_capture(current_url):
+                        record_skip(current_url, 'out_of_window')
+                    else:
+                        record_skip(current_url, 'no_memento')
+                    continue
+                memento = self.get_memento(record, mode=mode, exact=True, target_window=window_seconds)
+            except NoMementoError:
+                record_skip(current_url, 'no_memento')
+                continue
+            except (MementoPlaybackError, BlockedByRobotsError, BlockedSiteError):
+                record_skip(current_url, 'error')
+                continue
+
+            # Following historical redirects may have landed on a capture
+            # outside the window even though the requested capture was
+            # inside it. If so, this page doesn't belong in the traversal.
+            if not (window_start <= memento.timestamp <= window_end):
+                memento.close()
+                record_skip(current_url, 'out_of_window')
+                continue
+
+            pages[current_url] = memento
+
+            for link in extract_page_links(memento):
+                edge = (current_url, link)
+                if edge not in seen_edges:
+                    seen_edges.add(edge)
+                    edge_pairs.append(edge)
+
+                if same_site and urlparse(link).hostname != start_host:
+                    record_skip(link, 'offsite')
+                elif link not in known_urls:
+                    # Each URL is queued at most once, so link cycles can
+                    # never cause a page to be fetched twice.
+                    known_urls.add(link)
+                    queue.append(link)
+
+        edges = tuple(
+            CrawlEdge(
+                source=source,
+                target=target,
+                captured_at=pages[target].timestamp if target in pages else None,
+            )
+            for source, target in edge_pairs
+        )
+
+        return CrawlResult(
+            root=start_url,
+            timestamp=target_time,
+            window=window_delta,
+            pages=pages,
+            edges=edges,
+            skipped=tuple(skipped),
+        )

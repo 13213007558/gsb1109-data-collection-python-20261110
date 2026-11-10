@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import NamedTuple, Optional
+from typing import Dict, NamedTuple, Optional, Tuple
 from urllib.parse import urljoin
 from warnings import warn
 from ._utils import CaseInsensitiveDict, memento_url_data, format_memento_url
@@ -519,3 +519,143 @@ class Memento:
             headers['location'], _, _ = memento_url_data(raw_location)
 
         return headers
+
+
+class CrawlEdge(NamedTuple):
+    """
+    Represents a link from one historical page to another, as discovered by
+    :meth:`WaybackClient.crawl`.
+
+    **Attributes**
+
+    .. py:attribute:: source
+       :type: str
+
+       The URL of the page the link was found on.
+
+    .. py:attribute:: target
+       :type: str
+
+       The URL the link points to (resolved against the source page's base
+       URL). Links that Wayback rewrote into memento URLs (e.g. in ``view``
+       mode) are unwrapped back to the original URL.
+
+    .. py:attribute:: captured_at
+       :type: Optional[datetime]
+
+       The capture time of the target page's memento, or ``None`` if the
+       target was not fetched (for example, because it was outside the
+       crawl's time window or off-site).
+    """
+
+    source: str
+    target: str
+    captured_at: Optional[datetime]
+
+
+class SkippedLink(NamedTuple):
+    """
+    Represents a URL that was encountered but not fetched during a
+    :meth:`WaybackClient.crawl` traversal.
+
+    **Attributes**
+
+    .. py:attribute:: url
+       :type: str
+
+       The URL that was not fetched.
+
+    .. py:attribute:: reason
+       :type: str
+
+       Why the URL was not fetched. One of:
+
+       * ``'offsite'``: the URL is on a different site than the crawl's
+         starting URL and the crawl was not allowed to cross sites.
+       * ``'out_of_window'``: the URL has captures, but none within the
+         crawl's time window.
+       * ``'no_memento'``: the URL has no captures in the archive at all,
+         or its captures could not be played back.
+       * ``'error'``: an unexpected error occurred while trying to look up
+         or fetch the URL.
+    """
+
+    url: str
+    reason: str
+
+
+class CrawlResult:
+    """
+    The result of a time-window-constrained historical link traversal (see
+    :meth:`WaybackClient.crawl`).
+
+    .. important::
+       This is **not** a snapshot of a web site at a single point in time.
+       Each page in :attr:`pages` is represented by its own capture, and
+       those captures happened at different times (though all within the
+       crawl's time window). Some linked pages may also be missing entirely
+       (see :attr:`skipped`). Use :attr:`edges` to see the actual capture
+       time associated with each link.
+
+    **Attributes**
+
+    .. py:attribute:: root
+       :type: str
+
+       The URL the crawl started from.
+
+    .. py:attribute:: timestamp
+       :type: datetime
+
+       The target time the crawl was centered on.
+
+    .. py:attribute:: window
+       :type: timedelta
+
+       The maximum allowed distance between :attr:`timestamp` and the
+       capture time of any fetched page.
+
+    .. py:attribute:: pages
+       :type: Dict[str, wayback.Memento]
+
+       The pages that were fetched, keyed by URL. Every memento here was
+       captured within the crawl's time window.
+
+    .. py:attribute:: edges
+       :type: Tuple[wayback.CrawlEdge]
+
+       The links that were found on fetched pages, in discovery order. Each
+       edge records the capture time of its target page (or ``None`` if the
+       target was not fetched).
+
+    .. py:attribute:: skipped
+       :type: Tuple[wayback.SkippedLink]
+
+       URLs that were encountered but not fetched, along with the reason
+       each was skipped.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: str,
+        timestamp: datetime,
+        window: timedelta,
+        pages: Dict[str, 'Memento'],
+        edges: Tuple[CrawlEdge, ...],
+        skipped: Tuple[SkippedLink, ...],
+    ):
+        self.root = root
+        self.timestamp = timestamp
+        self.window = window
+        self.pages = pages
+        self.edges = tuple(edges)
+        self.skipped = tuple(skipped)
+
+    def __repr__(self):
+        return (
+            f'<{type(self).__module__.split("._", 1)[0]}'
+            f'.{type(self).__name__} root="{self.root}" '
+            f'pages={len(self.pages)} edges={len(self.edges)} '
+            f'skipped={len(self.skipped)}>'
+        )

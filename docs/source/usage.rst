@@ -127,6 +127,7 @@ Memento API. We implement a Python client that can speak both.
 
     .. automethod:: search
     .. automethod:: get_memento
+    .. automethod:: crawl
 
 .. autoclass:: wayback.CdxRecord
 
@@ -134,6 +135,12 @@ Memento API. We implement a Python client that can speak both.
 
     .. automethod:: close
     .. automethod:: parse_memento_headers
+
+.. autoclass:: wayback.CrawlResult
+
+.. autoclass:: wayback.CrawlEdge
+
+.. autoclass:: wayback.SkippedLink
 
 .. autoclass:: wayback.WaybackSession
 
