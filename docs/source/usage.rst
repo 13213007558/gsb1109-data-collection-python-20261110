@@ -116,6 +116,43 @@ We picked up a couple additional occurrences that the original count missed.
    __cassette.__exit__()
 
 
+Choosing a small, well-spread sample of snapshots
+==================================================
+
+A URL can have tens of thousands of captures, but you may only have the budget
+to download a handful of mementos. Picking the first 20 results would often
+concentrate all of them in a single day. :meth:`WaybackClient.sample_mementos`
+chooses a time-aware sample using only the CDX index (timestamps and content
+digests), so no memento bodies are downloaded until after the selection is
+made:
+
+.. code-block:: python
+
+   from wayback import DuplicatePolicy
+
+   selection = client.sample_mementos(
+       'http://example.com',
+       budget=20,
+       from_date='20100101',
+       to_date='20200101',
+       duplicate_policy=DuplicatePolicy.representative,
+   )
+
+Selection prioritizes the first and last captures in the range, then content
+change points after the longest empty windows, and finally time representatives
+of runs where the digest repeats. Pass ``duplicate_policy='drop'`` to
+deduplicate repeated content instead. When the budget cannot cover every
+candidate, ``selection.gaps`` lists the omitted time spans and how many
+captures each one contains. :meth:`SampleSelection.report` prints the
+selection list and its coverage rationale:
+
+.. code-block:: python
+
+   print(selection.report())
+   for record in selection.records:
+       memento = client.get_memento(record)
+
+
 API Documentation
 =================
 
@@ -126,7 +163,20 @@ Memento API. We implement a Python client that can speak both.
 .. autoclass:: wayback.WaybackClient
 
     .. automethod:: search
+    .. automethod:: sample_mementos
     .. automethod:: get_memento
+
+.. autofunction:: wayback.sample_snapshots
+
+.. autoclass:: wayback.SampleSelection
+
+    .. automethod:: report
+
+.. autoclass:: wayback.SelectionReason
+
+.. autoclass:: wayback.CoverageGap
+
+.. autoclass:: wayback.DuplicatePolicy
 
 .. autoclass:: wayback.CdxRecord
 

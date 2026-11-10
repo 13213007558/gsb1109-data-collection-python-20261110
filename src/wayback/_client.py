@@ -34,6 +34,7 @@ from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutEr
 from warnings import warn
 from . import _utils, __version__
 from ._models import CdxRecord, Memento, Mode
+from ._sampling import DuplicatePolicy, sample_snapshots as _sample_snapshots
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
@@ -817,6 +818,65 @@ class WaybackClient(_utils.DepthCountedContext):
                 yield data
 
         return count
+
+    def sample_mementos(
+        self,
+        url,
+        budget,
+        *,
+        duplicate_policy=DuplicatePolicy.representative,
+        from_date=None,
+        to_date=None,
+        **search_kwargs,
+    ):
+        """
+        Choose a small, time-aware sample of snapshots for a URL without
+        downloading any memento bodies.
+
+        This runs a CDX index :meth:`search` (the same lightweight index used
+        by :meth:`search`), then applies :func:`wayback.sample_snapshots` to
+        the results. Selection prioritizes:
+
+        1. The first and last captures in the time range (the two sides of any
+           long empty window).
+        2. Points where the content digest changes, preferring changes that
+           follow long capture gaps.
+        3. Time representatives of repeated-digest runs, when the budget
+           allows.
+
+        Parameters
+        ----------
+        url : str
+            The URL to sample captures of. Passed straight through to
+            :meth:`search`.
+        budget : int
+            Maximum number of snapshots to select. Must be at least 1.
+        duplicate_policy : wayback.DuplicatePolicy or str, default: wayback.DuplicatePolicy.representative
+            ``'representative'`` keeps a time representative of repeated
+            digests; ``'drop'`` deduplicates them.
+        from_date : datetime or date, optional
+            Inclusive start of the time range to consider.
+        to_date : datetime or date, optional
+            Inclusive end of the time range to consider.
+        **search_kwargs
+            Any other keyword arguments accepted by :meth:`search`, e.g.
+            ``match_type`` or ``filter_field``.
+
+        Returns
+        -------
+        SampleSelection
+            The selected :class:`CdxRecord` objects, a per-record rationale,
+            and any time spans the budget could not cover. The records are
+            ready to be fetched later with :meth:`get_memento`.
+        """
+        records = list(self.search(url, from_date=from_date, to_date=to_date, **search_kwargs))
+        return _sample_snapshots(
+            records,
+            budget,
+            duplicate_policy=duplicate_policy,
+            from_date=from_date,
+            to_date=to_date,
+        )
 
     def get_memento(
         self,

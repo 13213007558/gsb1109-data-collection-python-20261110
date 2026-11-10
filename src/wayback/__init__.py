@@ -7,6 +7,14 @@ from ._models import (  # noqa
     Memento,
 )
 
+from ._sampling import (  # noqa
+    CoverageGap,
+    DuplicatePolicy,
+    SampleSelection,
+    SelectionReason,
+    sample_snapshots,
+)
+
 from ._client import (  # noqa
     Mode,
     WaybackClient,

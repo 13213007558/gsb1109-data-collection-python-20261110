@@ -5,6 +5,8 @@ Release History
 In Development
 --------------
 
+- Added :meth:`wayback.WaybackClient.sample_mementos` and the :func:`wayback.sample_snapshots` helper for choosing a budgeted, time-aware sample of snapshots from CDX index records without downloading any memento bodies. Selection prioritizes range boundaries and content-digest change points after long empty windows; repeated digests can be kept as time representatives (``DuplicatePolicy.representative``) or deduplicated (``DuplicatePolicy.drop``), and time spans the budget cannot cover are reported as :class:`wayback.CoverageGap` instances.
+
 - Added a “funding” link to the project’s PyPI listing. You can donate to EDGI’s work (including this project) at https://envirodatagov.org/donate/. (:issue:`222`)
 
 
