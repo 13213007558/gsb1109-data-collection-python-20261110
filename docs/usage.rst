@@ -1328,6 +1328,74 @@ into an XPath expression as a string, which you can use as-is or combine to
 build a more complex expression, before feeding to a function expecting XPath.
 
 
+Restricted XPath queries
+========================
+
+When the XPath expression comes from an untrusted user, a complex expression
+on a large page can keep the CPU busy for arbitrarily long. The regular
+:meth:`~parsel.Selector.xpath` method has no execution time limit, because it
+evaluates the expression directly in the calling process.
+
+:func:`~parsel.run_limited_xpath` is a separate, restricted entry point. Each
+call runs the expression in a dedicated worker process that can be
+hard-terminated, so a single slow query never blocks the rest of the
+application and no worker is left running after a failure::
+
+    >>> from parsel import Selector, run_limited_xpath
+    >>> selector = Selector(text="<ul><li>a</li><li>b</li></ul>")
+    >>> run_limited_xpath(
+    ...     selector,
+    ...     "//li/text()",
+    ...     max_execution_time=2,
+    ...     max_results=100,
+    ... ).getall()
+    ['a', 'b']
+
+Successful calls return the same :class:`~parsel.SelectorList` as
+:meth:`~parsel.Selector.xpath`, including for nested selectors, text results
+and scalar results such as ``count()``.
+
+Three limits can be configured:
+
+* ``max_execution_time`` (seconds) is a **hard, strictly enforced** limit on
+  the wall-clock duration of the whole call, including worker startup. On
+  expiry the worker process is terminated (and killed if it does not exit) and
+  :class:`~parsel.QueryTimeoutError` is raised.
+* ``max_results`` is **strictly enforced** on the full result sequence:
+  :class:`~parsel.QueryResultLimitError` is raised if the expression returns
+  more items than allowed.
+* ``max_input_size`` (bytes) is a **pre-flight rejection only**: the
+  serialized document is measured before any worker is spawned and oversized
+  inputs raise :class:`~parsel.QueryInputSizeLimitError`. It is not a memory
+  cap, because parsing and evaluating a smaller document can still allocate
+  substantial memory.
+
+Two limits are deliberately not strict:
+
+* ``max_input_size`` bounds serialized input size, not memory usage.
+* ``max_results`` bounds the final result sequence, not the intermediate node
+  sets that libxml2 computes while evaluating the expression.
+
+In both cases ``max_execution_time`` remains the backstop. The length and
+complexity of the XPath expression itself is not limited either.
+
+Because every call uses its own process, terminating one query does not affect
+other queries, and concurrent calls terminate independently. The cost of this
+isolation is that the input document is serialized and parsed again in the
+worker, so this entry point should be reserved for untrusted or otherwise
+risky expressions rather than replacing every :meth:`~parsel.Selector.xpath`
+call.
+
+Invalid expressions raise :class:`~parsel.QueryEvaluationError`::
+
+    >>> from parsel import QueryEvaluationError
+    >>> try:
+    ...     run_limited_xpath(selector, "//[", max_execution_time=2)
+    ... except QueryEvaluationError as error:
+    ...     print(type(error).__name__)
+    QueryEvaluationError
+
+
 Similar libraries
 =================
 

@@ -3,6 +3,17 @@
 History
 -------
 
+UNRELEASED
+~~~~~~~~~~
+
+* Added :func:`parsel.run_limited_xpath`, a restricted XPath entry point for
+  untrusted expressions. It evaluates the expression in a dedicated worker
+  process with a hard ``max_execution_time`` (the worker is hard-terminated on
+  expiry), a strictly enforced ``max_results``, and a pre-flight
+  ``max_input_size`` rejection. Terminating one query does not affect other
+  queries, and successful calls return the same selectors as
+  :meth:`parsel.Selector.xpath`.
+
 1.12.1 (2026-09-28)
 ~~~~~~~~~~~~~~~~~~~
 

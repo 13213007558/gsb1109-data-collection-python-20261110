@@ -12,6 +12,15 @@ parsel.csstranslator
 
 .. _topics-selectors-ref:
 
+parsel.limited
+--------------
+
+.. automodule:: parsel.limited
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+
 parsel.selector
 ---------------
 
