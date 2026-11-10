@@ -15,6 +15,7 @@ from lxml.html import HtmlElement
 
 from .cleaners import clean_attributes
 from .cleaners import html_cleaner
+from .formulas import prepare_formulas
 from .htmls import build_doc
 from .htmls import get_body
 from .htmls import get_title
@@ -135,6 +136,7 @@ class Document:
         retry_length=250,
         xpath=False,
         handle_failures="discard",
+        keep_formulas=False,
     ):
         """Generate the document
 
@@ -148,6 +150,9 @@ class Document:
         reconstruct selected summary in original document).
         :param handle_failures: Parameter passed to `lxml` for handling failure during exception.
         Support options = ["discard", "ignore", None]
+        :param keep_formulas: Preserve MathML formulas and their alternative
+        text at their original inline or block position, merging duplicate
+        visual/assistive layers of the same formula.
 
         Examples:
             positive_keywords=["news-item", "block"]
@@ -174,6 +179,7 @@ class Document:
         self.retry_length = retry_length
         self.xpath = xpath
         self.handle_failures = handle_failures
+        self.keep_formulas = keep_formulas
 
     def _html(self, force=False):
         if force or self.html is None:
@@ -192,9 +198,13 @@ class Document:
         else:
             doc, self.encoding = build_doc(input)
         for elem in doc.xpath("//*[@hidden]"):
+            if self.keep_formulas and elem.xpath("descendant-or-self::math"):
+                continue
             elem.drop_tree()
         for elem in doc.xpath("//*[@style]"):
             if REGEXES["displayNoneRe"].search(elem.get("style")):
+                if self.keep_formulas and elem.xpath("descendant-or-self::math"):
+                    continue
                 elem.drop_tree()
         doc = html_cleaner.clean_html(doc)
         base_href = self.url
@@ -242,23 +252,30 @@ class Document:
         """
         return clean_attributes(tounicode(self._html(), method="html"))
 
-    def summary(self, html_partial=False, keep_all_images=False):
+    def summary(self, html_partial=False, keep_all_images=False, keep_formulas=None):
         """
         Given a HTML file, extracts the text of the article.
 
         :param html_partial: return only the div of the document, don't wrap
                              in html and body tags.
         :param keep_all_images: Keep all images in summary.
+        :param keep_formulas: Preserve MathML formulas and their alternative
+                              text. Overrides the Document-level setting when
+                              not None.
 
         Warning: It mutates internal DOM representation of the HTML document,
         so it is better to call other API methods before this one.
         """
+        if keep_formulas is not None:
+            self.keep_formulas = keep_formulas
         try:
             ruthless = True
             while True:
                 self._html(True)
                 for i in self.tags(self.html, "script", "style", "noscript"):
                     i.drop_tree()
+                if self.keep_formulas:
+                    prepare_formulas(self.html)
                 for i in self.tags(self.html, "body"):
                     i.set("id", "readabilityBody")
                 if ruthless:
@@ -369,6 +386,13 @@ class Document:
                     and re.search(r"\.( |$)", node_content)
                 ):
                     append = True
+
+            if (
+                self.keep_formulas
+                and sibling.findall(".//math")
+                and self.get_link_density(sibling) <= 0.2
+            ):
+                append = True
 
             if append:
                 # We don't want to append directly to output, but the div
@@ -902,6 +926,15 @@ class Document:
             for elem in self.tags(node, "div", "section")
             if self.is_quote_lead(elem)
         })
+        if self.keep_formulas:
+            allowed.update({
+                elem: True
+                for elem in self.tags(
+                    node, "table", "ul", "div", "aside", "header", "footer",
+                    "section",
+                )
+                if elem.findall(".//math")
+            })
         return allowed
 
     def sanitize(self, node, candidates, keep_all_images=False):
@@ -1109,6 +1142,13 @@ def main():
     )
     parser.add_option("-x", "--xpath", default=None, help="add original xpath")
     parser.add_option(
+        "-f",
+        "--keep-formulas",
+        default=False,
+        action="store_true",
+        help="preserve MathML formulas and their alternative text",
+    )
+    parser.add_option(
         "-p",
         "--positive-keywords",
         default=None,
@@ -1148,6 +1188,7 @@ def main():
             url=options.url,
             positive_keywords=options.positive_keywords,
             negative_keywords=options.negative_keywords,
+            keep_formulas=options.keep_formulas,
         )
         if options.browser:
             from .browser import open_in_browser

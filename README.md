@@ -49,6 +49,25 @@ The command-line interface accepts a local HTML file or a URL:
 python -m readability -u https://example.com
 ```
 
+### Formula preservation
+
+Technical articles often carry formulas as MathML plus an alternative text
+(`alttext`, `<annotation>`, fallback images, or visually hidden spans). Pass
+`keep_formulas=True` to `Document` (or to `summary()`, or `-f` on the command
+line) to keep each formula at its original inline or block position:
+
+- MathML is preserved untouched and marked with
+  `data-readability-formula="inline|block"`; no scripts are executed and no
+  rendering engine is required.
+- Alternative text is lifted into a `data-alttext` attribute, and duplicate
+  visual/assistive layers of the same formula (annotations, matching fallback
+  images or spans) are merged so the formula is counted only once.
+- When two layers cannot be matched reliably, both are kept and the formula
+  is flagged with `data-readability-formula-uncertain="true"`.
+- Ordinary prose, including variables mentioned in plain text, is never
+  treated as a formula copy.
+
+
 Run the real-page extraction benchmark with the default minimum F1 of 0.95:
 
 ```bash
