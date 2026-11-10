@@ -1,5 +1,6 @@
 __version__ = "1.10.0"
 
+from queuelib.merging import MergingQueue
 from queuelib.pqueue import PriorityQueue
 from queuelib.queue import (
     FifoDiskQueue,
@@ -18,6 +19,7 @@ __all__ = [
     "LifoDiskQueue",
     "LifoMemoryQueue",
     "LifoSQLiteQueue",
+    "MergingQueue",
     "PriorityQueue",
     "RoundRobinQueue",
 ]

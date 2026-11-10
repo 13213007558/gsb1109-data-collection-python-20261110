@@ -1,6 +1,17 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+--------------
+(unreleased)
+
+* Added ``MergingQueue``, a keyed FIFO queue that keeps at most one pending
+  entry per key. Re-submitting a pending key replaces its payload in place and
+  keeps its first queue position, or merges it through a caller-provided
+  function. Failed merges or writes preserve the previous payload and the
+  single pending entry, and the queue works with both in-memory and persistent
+  backing queues.
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

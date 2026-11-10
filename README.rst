@@ -20,7 +20,8 @@ Queuelib is a Python library that implements object collections which are stored
 in memory or persisted to disk, provide a simple API, and run fast.
 
 Queuelib provides collections for queues_ (FIFO), stacks_ (LIFO), queues
-sorted by priority and queues that are emptied in a round-robin_ fashion.
+sorted by priority, queues that are emptied in a round-robin_ fashion, and
+keyed queues that merge repeated submissions for the same key.
 
 .. note:: Queuelib collections are not thread-safe.
 
@@ -147,6 +148,67 @@ And use it::
     b'b'
     >>> rr.pop()
     b'd'
+
+MergingQueue
+============
+
+A keyed FIFO queue that keeps at most one pending entry per key. Use it when
+the same key (for example a product identifier) can be submitted several times
+before it is fetched: only the latest pending content is kept, so a frequently
+updated key never piles up duplicate tasks.
+
+Each key owns one internal queue from ``qfactory``, which may be in-memory or
+persistent, exactly as for :class:`~queuelib.pqueue.PriorityQueue`. Submitting
+a key that already has a pending entry replaces that entry *in place*, so it
+keeps the position of its first submission instead of moving to the tail. A key
+that has been popped is no longer pending; submitting it again queues a
+brand-new task at the tail.
+
+A plain submission replaces the pending payload::
+
+    >>> from queuelib import MergingQueue
+    >>> mq = MergingQueue(lambda key: FifoMemoryQueue())
+    >>> mq.push(b'v1', 'product')
+    >>> mq.push(b'v2', 'product')
+    >>> len(mq)
+    1
+    >>> mq.pop()
+    b'v2'
+
+Passing ``merge`` combines the old and the new payload instead of replacing
+it. The function is only called when the key already has a pending entry::
+
+    >>> def merge(old, new):
+    ...     return old + b'|' + new
+    ...
+    >>> mq.push(b'a', 'k')
+    >>> mq.push(b'b', 'k', merge=merge)
+    >>> mq.push(b'c', 'k', merge=merge)
+    >>> mq.peek()
+    b'a|b|c'
+    >>> mq.pop()
+    b'a|b|c'
+
+The merge function runs before the queue is modified. If it raises, the
+previous payload and the queue position are preserved, and the key still has a
+single pending entry. A failed write is handled the same way: the previous
+payload is restored rather than lost.
+
+Repeated updates do not change the order, so a hot key stays at its original
+position instead of being pushed to the tail::
+
+    >>> mq.push(b'a', 'a')
+    >>> mq.push(b'hot', 'hot')
+    >>> mq.push(b'c', 'c')
+    >>> for i in range(100):
+    ...     mq.push(f'hot{i}'.encode(), 'hot')
+    ...
+    >>> list(mq.key_queue)
+    ['a', 'hot', 'c']
+
+As with the other composite queues, persistence comes from the internal
+queues: ``close()`` returns the keys that still hold an entry, in queue order,
+and you pass them back as ``start_keys`` when reopening.
 
 Clearing a queue
 ================
