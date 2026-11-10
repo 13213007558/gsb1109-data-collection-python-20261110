@@ -14,6 +14,7 @@ Other potentially useful links:
 """
 
 from base64 import b32encode
+from contextlib import contextmanager
 from datetime import date, timedelta
 import hashlib
 import logging
@@ -27,6 +28,7 @@ from requests.exceptions import (
     RetryError,
     Timeout,
 )
+import threading
 import time
 from urllib.parse import urljoin, urlparse
 from urllib3.connectionpool import HTTPConnectionPool
@@ -34,6 +36,7 @@ from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutEr
 from warnings import warn
 from . import _utils, __version__
 from ._models import CdxRecord, Memento, Mode
+from ._utils import CooldownReason, ServiceCooldown
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
@@ -43,6 +46,7 @@ from .exceptions import (
     NoMementoError,
     WaybackRetryError,
     RateLimitError,
+    RequestCancelled,
 )
 
 
@@ -323,6 +327,30 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
         **This parameter is deprecated.** The service it set a rate limit for
         now shares its limits with the one covered by
         ``search_calls_per_second``. Set that parameter instead.
+    cooldown : wayback.ServiceCooldown, optional
+        The shared cooldown state that coordinates backoff across threads (and,
+        if you pass the same instance to several sessions, across those
+        sessions too). When one request receives an HTTP 429, it engages the
+        cooldown for the duration given by the response's ``Retry-After``
+        header (or :data:`DEFAULT_RATE_LIMIT_DELAY` when that header is
+        missing), and every other request sharing this instance waits before
+        sending anything. If not given, a new cooldown is created for this
+        session.
+    clear_cooldown_on_success : bool, default: False
+        The policy used when this session has to create its own cooldown. If
+        ``True``, a successful response clears any active cooldown early. If
+        ``False`` (the default), a cooldown always runs to its scheduled end;
+        a single successful response does not prove the service has stopped
+        rate limiting other clients. This has no effect when a pre-built
+        ``cooldown`` is supplied (configure the policy on that instance).
+    clock : callable, optional
+        A zero-argument callable returning the current time in seconds. Used
+        for cooldown and ``Retry-After`` calculations and injectable for
+        deterministic testing. Defaults to :func:`time.time`.
+    sleep : callable, optional
+        A callable taking a number of seconds to block. Injectable for
+        deterministic testing without real sleeping. Defaults to
+        :func:`time.sleep`.
     """
 
     # It seems Wayback sometimes produces 500 errors for transient issues, so
@@ -343,11 +371,28 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
         search_calls_per_second=DEFAULT_CDX_RATE_LIMIT,
         memento_calls_per_second=DEFAULT_MEMENTO_RATE_LIMIT,
         timemap_calls_per_second=None,
+        cooldown=None,
+        clear_cooldown_on_success=False,
+        clock=None,
+        sleep=None,
     ):
         super().__init__()
         self.retries = retries
         self.backoff = backoff
         self.timeout = timeout
+        self._clock = clock or time.time
+        self._sleep = sleep or time.sleep
+        # Cancellation is per calling thread: cancelling one request must not
+        # affect requests running on other threads, and must not clear the
+        # shared cooldown they are all respecting.
+        self._cancel_state = threading.local()
+        if cooldown is None:
+            cooldown = ServiceCooldown(
+                clear_on_success=clear_cooldown_on_success,
+                clock=self._clock,
+                sleep=self._sleep,
+            )
+        self.cooldown = cooldown
         self.headers = {
             'User-Agent': (
                 user_agent or f'wayback/{__version__} (+https://github.com/edgi-govdata-archiving/wayback)'
@@ -385,9 +430,57 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
         # with Wayback's APIs, but urllib3 logs a warning on every retry:
         # https://github.com/urllib3/urllib3/blob/5b047b645f5f93900d5e2fc31230848c25eb1f5f/src/urllib3/connectionpool.py#L730-L737
 
+    @contextmanager
+    def cancel_with(self, cancellation: threading.Event):
+        """
+        Context manager that associates a cancellation event with requests
+        made on the current thread.
+
+        If the event is set while a request is blocked on the shared cooldown
+        (or on a retry/backoff sleep), the request raises
+        :class:`~wayback.exceptions.RequestCancelled` without touching the
+        shared cooldown, so requests on other threads keep waiting as
+        required. The association is removed again when the context exits.
+
+        Parameters
+        ----------
+        cancellation : threading.Event
+        """
+        self._cancel_state.event = cancellation
+        try:
+            yield
+        finally:
+            self._cancel_state.event = None
+
+    def _cancellation(self):
+        return getattr(self._cancel_state, 'event', None)
+
+    def _raise_if_cancelled(self):
+        event = self._cancellation()
+        if event is not None and event.is_set():
+            raise RequestCancelled('Request was cancelled before it was sent.')
+
+    def _sleep_cancellable(self, seconds):
+        """
+        Block for up to ``seconds`` using the injected sleep, raising
+        :class:`RequestCancelled` if this thread's cancellation event is set.
+        Used for per-request retry backoff that is not represented by the
+        shared cooldown (e.g. a transient 5xx response).
+        """
+        if seconds <= 0:
+            self._raise_if_cancelled()
+            return
+        deadline = self._clock() + seconds
+        while True:
+            self._raise_if_cancelled()
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return
+            self._sleep(min(remaining, 0.05))
+
     # Customize the built-in `send()` with retryability and rate limiting.
     def send(self, request: requests.PreparedRequest, **kwargs):
-        start_time = time.time()
+        start_time = self._clock()
         maximum = self.retries
         retries = 0
 
@@ -402,6 +495,12 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
         while True:
             retry_delay = 0
             try:
+                # First honor any shared service cooldown. This wait holds no
+                # HTTP connection or response resource, and may be cancelled
+                # by this thread's caller without affecting other threads.
+                self.cooldown.wait(self._cancellation())
+                self._raise_if_cancelled()
+
                 logger.debug('sending HTTP request %s "%s", %s', request.method, request.url, kwargs)
                 rate_limit.wait()
                 response = super().send(request, **kwargs)
@@ -410,30 +509,48 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
                 if is_memento_response(response):
                     # Mementos are necessarily successful responses, so just
                     # return them without any other checks.
+                    self.cooldown.note_success()
                     return response
                 elif retries >= maximum or not self.should_retry(response):
                     if response.status_code == 429:
+                        # Engage the shared cooldown so every other thread
+                        # sharing this service stops sending requests for the
+                        # server-requested duration before we raise.
+                        self.cooldown.engage(retry_delay, CooldownReason.rate_limited)
                         read_and_close(response)
                         raise RateLimitError(response, retry_delay)
+                    self.cooldown.note_success()
                     return response
                 else:
                     logger.debug('Received error response (status: %s), will retry', response.status_code)
                     read_and_close(response)
+            except RequestCancelled:
+                # Caller cancellation is distinct from both server waits and
+                # connection backoff, and must never alter the cooldown.
+                raise
             except WaybackSession.handleable_errors as error:
                 response = getattr(error, 'response', None)
                 if response is not None:
                     read_and_close(response)
 
                 if retries >= maximum:
-                    raise WaybackRetryError(retries, time.time() - start_time, error) from error
+                    raise WaybackRetryError(retries, self._clock() - start_time, error) from error
                 elif self.should_retry_error(error):
                     retry_delay = self.get_retry_delay(retries, response)
+                    # Connection-failure backoff is shared via its own cooldown
+                    # reason, separate from server rate-limit waits, so other
+                    # threads also back off while this service is unreachable.
+                    self.cooldown.engage(retry_delay, CooldownReason.connection_failure)
                     logger.info('Caught exception during request, will retry: %s', error)
                 else:
                     raise
 
             logger.debug('Will retry after sleeping for %s seconds...', retry_delay)
-            time.sleep(retry_delay)
+            # Local per-request backoff (e.g. after a transient 5xx or a
+            # connection failure). It stays cancellable; any shared cooldown is
+            # honored separately at the top of the next loop iteration, so the
+            # two kinds of waiting never get conflated.
+            self._sleep_cancellable(retry_delay)
             retries += 1
 
     # Customize `request` in order to set a default timeout from the session.
@@ -479,7 +596,7 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
         # As of 2023-11-27, the Wayback Machine does not set a `Retry-After`
         # header, so this parsing is just future-proofing.
         if response is not None:
-            delay = _utils.parse_retry_after(response.headers.get('Retry-After')) or delay
+            delay = _utils.parse_retry_after(response.headers.get('Retry-After'), now=self._clock) or delay
             if response.status_code == 429 and delay == 0:
                 delay = DEFAULT_RATE_LIMIT_DELAY
 

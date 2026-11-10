@@ -2,15 +2,16 @@ from collections import OrderedDict
 from collections.abc import Mapping, MutableMapping
 from datetime import date, datetime, timezone
 import email.utils
+from enum import Enum
 import logging
 import re
 import requests
 import requests.adapters
 import threading
 import time
-from typing import Union
+from typing import Callable, Dict, Optional, Union
 import urllib.parse
-from .exceptions import SessionClosedError
+from .exceptions import RequestCancelled, SessionClosedError
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +85,20 @@ def parse_timestamp(time_string):
     return datetime.strptime(time_string, URL_DATE_FORMAT).replace(tzinfo=timezone.utc)
 
 
-def parse_retry_after(retry_after_header):
+def parse_retry_after(retry_after_header, now: Optional[Callable[[], float]] = None):
     """
     Given a response object, return the recommended retry-after time in seconds
     or ``None`` if there is no recommended timeframe. Returns ``0`` if the
     time was in the past or could not be parsed.
+
+    Parameters
+    ----------
+    retry_after_header : str, optional
+        The value of an HTTP ``Retry-After`` header. It may be a number of
+        seconds or an HTTP date.
+    now : callable, optional
+        A callable that returns the current time in seconds since the epoch.
+        This is primarily intended for testing with an injected clock.
     """
     if isinstance(retry_after_header, str):
         seconds = 0
@@ -98,7 +108,7 @@ def parse_retry_after(retry_after_header):
             retry_date_tuple = email.utils.parsedate_tz(retry_after_header)
             if retry_date_tuple:
                 retry_date = email.utils.mktime_tz(retry_date_tuple)
-                seconds = retry_date - int(time.time())
+                seconds = retry_date - int((now or time.time)())
 
         return max(0, seconds)
 
@@ -242,7 +252,7 @@ class RateLimit:
     >>>         print(x)
     """
 
-    def __init__(self, per_second: Union[int, float]):
+    def __init__(self, per_second: Union[int, float], clock: Optional[Callable[[], float]] = None):
         if not isinstance(per_second, (int, float)):
             raise TypeError(
                 f'The RateLimit per_second argument must be an int or float, not {type(per_second).__name__}'
@@ -250,6 +260,7 @@ class RateLimit:
 
         self._lock = threading.RLock()
         self._last_call_time = 0.0
+        self._clock = clock or time.time
         if per_second <= 0:
             self._minimum_wait = 0.0
         else:
@@ -260,12 +271,17 @@ class RateLimit:
             return
 
         with self._lock:
-            current_time = time.time()
+            current_time = self._clock()
             idle_time = current_time - self._last_call_time
             if idle_time < self._minimum_wait:
-                time.sleep(self._minimum_wait - idle_time)
+                self._sleep(self._minimum_wait - idle_time)
 
-            self._last_call_time = time.time()
+            self._last_call_time = self._clock()
+
+    def _sleep(self, seconds: float) -> None:
+        # Separate method so tests can replace sleeping without replacing the
+        # clock that drives the rate-limit calculations.
+        time.sleep(seconds)
 
     def __enter__(self) -> None:
         self.wait()
@@ -283,6 +299,186 @@ class RateLimit:
             return per_second
         else:
             return cls(per_second)
+
+
+class CooldownReason(Enum):
+    """
+    Why a shared :class:`ServiceCooldown` was engaged.
+
+    Distinguishing these reasons lets calling code apply different policies
+    (e.g. honoring a server-provided ``Retry-After`` versus applying local
+    exponential backoff after a connection failure).
+    """
+
+    #: The server explicitly asked clients to wait (e.g. an HTTP 429 with a
+    #: ``Retry-After`` header).
+    rate_limited = 'rate_limited'
+    #: A request failed because of a network/connection problem, so clients
+    #: should back off before trying again.
+    connection_failure = 'connection_failure'
+
+
+class ServiceCooldown:
+    """
+    A thread-safe, shareable cooldown state for coordinating requests to a
+    service (such as the Wayback Machine) across multiple threads and even
+    multiple :class:`~wayback.WaybackSession` instances.
+
+    When one thread receives a rate-limited response (HTTP 429), it engages
+    the cooldown with the duration from the response's ``Retry-After`` header.
+    All other threads sharing this instance then block in :meth:`wait` until
+    the cooldown expires instead of continuing to send requests into the
+    service's rate limit.
+
+    Waiting threads do not hold any HTTP connection or response: the cooldown
+    only owns a lock, and the actual blocking sleep in :meth:`wait` happens
+    outside that lock, so the cooldown state stays mutable for other threads
+    while callers wait.
+
+    A cooldown is keyed by its :class:`CooldownReason`. Cancelling one
+    waiting request (e.g. via its cancellation event) never clears the
+    cooldown for other requests. Whether a successful response clears an
+    active cooldown is governed by the explicit ``clear_on_success`` policy,
+    which defaults to ``False`` so a cooldown always runs to its scheduled
+    end unless the caller opts in.
+
+    Parameters
+    ----------
+    clear_on_success : bool, default: False
+        If ``True``, a call to :meth:`note_success` clears any active
+        cooldown. If ``False`` (the default), successful responses do not end
+        a cooldown early; it always lasts until its scheduled end.
+    clock : callable, optional
+        A zero-argument callable returning the current monotonic-ish time in
+        seconds. Defaults to :func:`time.time`. Injecting a clock makes the
+        cooldown timing deterministic in tests without real sleeping or real
+        rate-limit pressure.
+    sleep : callable, optional
+        A callable taking a number of seconds to sleep. Defaults to
+        :func:`time.sleep`. Tests can inject a no-op or a clock-advancing
+        sleep.
+    """
+
+    def __init__(
+        self,
+        clear_on_success: bool = False,
+        clock: Optional[Callable[[], float]] = None,
+        sleep: Optional[Callable[[float], None]] = None,
+        poll_interval: float = 0.05,
+    ):
+        self._lock = threading.RLock()
+        self._clear_on_success = clear_on_success
+        self._clock = clock or time.time
+        self._sleep = sleep or time.sleep
+        self._poll_interval = poll_interval
+        # End times keyed by why the cooldown was engaged. A missing entry or
+        # an end time at/before the current time means no active cooldown.
+        self._until: Dict[CooldownReason, float] = {}
+
+    @property
+    def clear_on_success(self) -> bool:
+        "Whether a successful response clears any active cooldown."
+        return self._clear_on_success
+
+    def remaining(self, reason: Optional[CooldownReason] = None) -> float:
+        """
+        Return how many seconds remain in the active cooldown.
+
+        If ``reason`` is given, only cooldowns of that reason are considered.
+        Otherwise the longest remaining cooldown across all reasons is
+        returned. Returns ``0`` if there is no active cooldown.
+        """
+        with self._lock:
+            now = self._clock()
+            if reason is not None:
+                return max(0.0, self._until.get(reason, 0.0) - now)
+            if not self._until:
+                return 0.0
+            return max(0.0, max(self._until.values()) - now)
+
+    def is_active(self, reason: Optional[CooldownReason] = None) -> bool:
+        "Return whether a cooldown is currently active."
+        return self.remaining(reason) > 0
+
+    def engage(self, seconds: float, reason: CooldownReason) -> float:
+        """
+        Engage or extend the cooldown for ``reason`` for at least ``seconds``
+        seconds from now.
+
+        If a cooldown for the same reason is already active and ends later
+        than the requested new end time, the existing end time is kept (a
+        cooldown is never shortened). Returns the resulting remaining time.
+        """
+        if seconds < 0:
+            seconds = 0
+        with self._lock:
+            new_until = self._clock() + seconds
+            current_until = self._until.get(reason, 0.0)
+            self._until[reason] = max(current_until, new_until)
+            return max(0.0, self._until[reason] - self._clock())
+
+    def clear(self, reason: Optional[CooldownReason] = None) -> None:
+        """
+        Clear the cooldown. If ``reason`` is given, clear only that reason's
+        cooldown; otherwise clear all cooldowns.
+        """
+        with self._lock:
+            if reason is None:
+                self._until.clear()
+            else:
+                self._until.pop(reason, None)
+
+    def note_success(self) -> None:
+        """
+        Record a successful response.
+
+        By default this does nothing, so an active cooldown always runs to its
+        scheduled end. If ``clear_on_success`` was enabled, this clears any
+        active cooldown so waiting threads stop blocking on their next check.
+        """
+        if self._clear_on_success:
+            self.clear()
+
+    def wait(self, cancellation: Optional[threading.Event] = None) -> None:
+        """
+        Block while any cooldown is active, then return.
+
+        The blocking sleep happens *outside* the internal lock, so no HTTP
+        connection or response resource is held while blocked and other
+        threads can still engage, extend, or clear the cooldown.
+
+        Parameters
+        ----------
+        cancellation : threading.Event, optional
+            If this event is set while waiting, raise
+            :class:`~wayback.exceptions.RequestCancelled` and leave the shared
+            cooldown intact for other requests. Cancelling one request never
+            clears the cooldown.
+        """
+        while True:
+            with self._lock:
+                remaining = self.remaining()
+                if remaining <= 0:
+                    return
+                if cancellation is not None and cancellation.is_set():
+                    raise RequestCancelled('Request was cancelled while waiting for a service cooldown')
+                sleep_for = min(remaining, self._poll_interval)
+
+            # Sleep without holding the lock so the cooldown state stays
+            # mutable for other threads while this one waits.
+            self._sleep(sleep_for)
+
+            if cancellation is not None and cancellation.is_set():
+                raise RequestCancelled('Request was cancelled while waiting for a service cooldown')
+
+    def wait_for(self, seconds: float, cancellation: Optional[threading.Event] = None) -> None:
+        """
+        Engage a cooldown for ``seconds`` (using
+        :attr:`CooldownReason.connection_failure`) and wait it out. This is
+        the entry point for connection-failure backoff.
+        """
+        self.engage(seconds, CooldownReason.connection_failure)
+        self.wait(cancellation)
 
 
 class DepthCountedContext:

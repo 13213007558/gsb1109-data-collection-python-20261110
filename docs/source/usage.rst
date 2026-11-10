@@ -116,6 +116,64 @@ We picked up a couple additional occurrences that the original count missed.
    __cassette.__exit__()
 
 
+Coordinating concurrent requests
+================================
+
+When several background threads (or several sessions) share one Wayback
+account, a single rate-limited response should pause *all* of them, not just
+the request that received it. Pass one :class:`wayback.ServiceCooldown` to
+every :class:`wayback.WaybackSession` you want coordinated:
+
+.. code-block:: python
+
+    import threading
+    import wayback
+
+    cooldown = wayback.ServiceCooldown()
+    sessions = [wayback.WaybackSession(cooldown=cooldown) for _ in range(4)]
+
+When a request receives an HTTP 429, the session engages the shared cooldown
+for the duration given by the response's ``Retry-After`` header (falling back
+to a built-in default when the header is absent). Other requests sharing the
+cooldown block before sending anything until that time has passed, instead of
+continuing to hit the rate limit. Backoff after a connection failure is
+tracked separately (see :class:`wayback.CooldownReason`), so server-directed
+waiting and local connection backoff are never conflated.
+
+Waiting threads do not hold an HTTP connection or response while blocked.
+
+Cancelling a single request
+----------------------------
+
+Cancellation is scoped to the calling thread, so cancelling one request never
+lifts the shared cooldown for the others. Associate a :class:`threading.Event`
+with the current thread using :meth:`wayback.WaybackSession.cancel_with`; if
+the event is set while the request is waiting on the cooldown, a
+:class:`wayback.exceptions.RequestCancelled` is raised:
+
+.. code-block:: python
+
+    cancellation = threading.Event()
+    with session.cancel_with(cancellation):
+        cancellation.set()  # e.g. from another thread
+        try:
+            session.request('GET', url)
+        except wayback.exceptions.RequestCancelled:
+            pass  # other sessions keep respecting the cooldown
+
+Successful responses and the cooldown
+--------------------------------------
+
+By default a successful response does **not** end a cooldown early, because one
+good response does not prove the service has stopped rate limiting other
+clients; the cooldown always runs to its scheduled end. If you want a success
+to clear it, opt in explicitly when constructing the cooldown:
+
+.. code-block:: python
+
+    cooldown = wayback.ServiceCooldown(clear_on_success=True)
+
+
 API Documentation
 =================
 
@@ -138,6 +196,7 @@ Memento API. We implement a Python client that can speak both.
 .. autoclass:: wayback.WaybackSession
 
     .. automethod:: reset
+    .. automethod:: cancel_with
 
 Utilities
 ---------
@@ -147,6 +206,18 @@ Utilities
 .. autoclass:: wayback.Mode
 
 .. autoclass:: wayback.RateLimit
+
+.. autoclass:: wayback.ServiceCooldown
+
+    .. automethod:: engage
+    .. automethod:: wait
+    .. automethod:: wait_for
+    .. automethod:: remaining
+    .. automethod:: is_active
+    .. automethod:: clear
+    .. automethod:: note_success
+
+.. autoclass:: wayback.CooldownReason
 
 Exception Classes
 -----------------
@@ -168,3 +239,5 @@ Exception Classes
 .. autoclass:: wayback.exceptions.WaybackRetryError
 
 .. autoclass:: wayback.exceptions.SessionClosedError
+
+.. autoclass:: wayback.exceptions.RequestCancelled

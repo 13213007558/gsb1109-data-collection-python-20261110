@@ -106,3 +106,15 @@ class SessionClosedError(Exception):
     Raised when a Wayback session is used to make a request after it has been
     closed and disabled.
     """
+
+
+class RequestCancelled(WaybackException):
+    """
+    Raised when a request is cancelled by its caller (for example, by setting
+    the cancellation event used with
+    :meth:`wayback.WaybackSession.cancel_with`) while the session was waiting
+    on a shared cooldown or before the request was sent.
+
+    Cancelling one request does not clear the shared service cooldown, so
+    other requests keep respecting it.
+    """

@@ -85,6 +85,28 @@ class TestRateLimit:
                         pass
         assert 1.66 <= time.time() - start_time <= 1.7
 
+    def test_injected_clock_is_deterministic(self):
+        """A rate limit with an injected clock sleeps based on logical time."""
+        current = [100.0]
+        slept = []
+
+        def clock():
+            return current[0]
+
+        def sleep(seconds):
+            slept.append(seconds)
+            current[0] += seconds
+
+        limit = RateLimit(per_second=2, clock=clock)
+        limit._sleep = sleep
+
+        limit.wait()  # First call never blocks.
+        assert slept == []
+
+        limit.wait()  # Minimum wait for 2 calls/second is 0.5 seconds.
+        assert slept == [pytest.approx(0.5)]
+        assert current[0] == pytest.approx(100.5)
+
 
 class TestParseRetryAfter:
     def test_seconds(self):
@@ -105,4 +127,21 @@ class TestParseRetryAfter:
 
     def test_negative_date(self):
         result = parse_retry_after(email.utils.formatdate(time.time() - 30))
+        assert 0 == result
+
+    def test_date_with_injected_clock(self):
+        # A fixed clock makes the date-based calculation deterministic.
+        fixed_now = 1_000_000.0
+        result = parse_retry_after(
+            email.utils.formatdate(fixed_now + 30),
+            now=lambda: fixed_now,
+        )
+        assert 30 == result
+
+    def test_past_date_with_injected_clock_is_zero(self):
+        fixed_now = 1_000_000.0
+        result = parse_retry_after(
+            email.utils.formatdate(fixed_now - 30),
+            now=lambda: fixed_now,
+        )
         assert 0 == result
