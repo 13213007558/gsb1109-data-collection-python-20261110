@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Relaunch-Beispiel: Produktseite</title>
+</head>
+<body>
+  <!-- Old template, kept in the DOM but hidden during the relaunch. -->
+  <div id="legacy-product" style="display:none" aria-hidden="true">
+    <h1 class="product-name">Artikel wird geladen …</h1>
+    <span class="price">0,00 €</span>
+    <span class="availability">unbekannt</span>
+  </div>
+
+  <!-- New template, actually visible. -->
+  <main id="product" class="product-v2">
+    <h1 class="product-name">Kaffeemühle CM-200</h1>
+    <p class="price">49,99 €</p>
+    <p class="availability">auf Lager</p>
+  </main>
+</body>
+</html>
