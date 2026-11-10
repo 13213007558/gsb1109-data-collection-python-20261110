@@ -1,6 +1,15 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+--------------
+(unreleased)
+
+* Added ``WeightedRoundRobinQueue``, a deficit round robin queue that shares
+  served cost according to per-source weights and caller-supplied item costs,
+  with explicit rules for rejoining sources, weight changes, oversized items
+  and bounded fairness
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)

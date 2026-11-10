@@ -148,6 +148,37 @@ And use it::
     >>> rr.pop()
     b'd'
 
+WeightedRoundRobinQueue
+=======================
+
+``RoundRobinQueue`` gives every key the same share of the service no matter
+how much work each item costs. ``WeightedRoundRobinQueue`` instead shares the
+served *cost* according to a per-key weight. Every item is pushed together
+with a positive, finite, caller-supplied cost (for example, the size of a
+download, in any unit), and every key has a positive, finite weight::
+
+    >>> from queuelib import WeightedRoundRobinQueue, FifoMemoryQueue
+    >>> wrr = WeightedRoundRobinQueue(
+    ...     lambda key: FifoMemoryQueue(),
+    ...     weights={"small": 1, "large": 3},
+    ... )
+    >>> wrr.push(b'a', "small", cost=1)
+    >>> wrr.push(b'b', "large", cost=10)
+
+The queue runs deficit round robin: each round every active key is visited
+once and granted a quota proportional to its weight, scaled so that the
+smallest quota still covers the most expensive pending item. A key serves
+items while their cost fits its accumulated quota. While the keys stay
+backlogged, each key's cumulative served cost converges to its share of the
+weights, within a constant error bound that does not grow with the number of
+items. Invalid costs or weights raise ``ValueError`` and nothing is enqueued.
+
+A key that runs dry leaves the rotation and forgets its quota; if it gets
+items again it rejoins at the back with a fresh quota. ``set_weight`` changes
+a key's weight from its next visit on, keeping the quota accumulated so far.
+Even a key with a very small weight is visited every round, so long-lived
+low-weight sources keep making progress.
+
 Clearing a queue
 ================
 
