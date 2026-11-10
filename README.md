@@ -75,6 +75,26 @@ elements. It features the following heuristics:
 
 Finally, the output is validated and converted to the chosen format.
 
+### Uncertain date mode
+
+Numeric dates like `03/04/2025` are ambiguous across regions: assuming a
+month-first (or day-first) order silently shifts the data by a day. The
+opt-in `parse_uncertain_date()` function keeps every admissible reading
+instead of committing to one. It combines the caller-allowed regions, the
+page language, and explicit month names in the text; conflicting context
+is flagged and never resolved by majority vote. Invalid dates, candidates
+excluded by the business date range, and remaining ambiguity are reported
+separately:
+
+```python
+>>> from htmldate import parse_uncertain_date
+>>> parse_uncertain_date("03/04/2025", regions=["US"], language="en").format()
+'2025-03-04'
+>>> r = parse_uncertain_date("03/04/2025", regions=["US"], language="de")
+>>> r.status.value, [c.isoformat() for c in r.candidates]
+('ambiguous', ['2025-04-03', '2025-03-04'])
+```
+
 ## Performance
 
 1000 web pages containing identifiable dates (as of 2026-10-01 on Python 3.13)

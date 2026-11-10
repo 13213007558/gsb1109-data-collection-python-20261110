@@ -13,7 +13,14 @@ __version__ = "1.11.0"
 import logging
 
 from .core import find_date
+from .uncertain import DateCandidate, UncertainDate, UncertainStatus, parse_uncertain_date
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__all__ = ["find_date"]
+__all__ = [
+    "find_date",
+    "parse_uncertain_date",
+    "DateCandidate",
+    "UncertainDate",
+    "UncertainStatus",
+]

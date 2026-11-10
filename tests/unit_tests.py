@@ -2365,3 +2365,88 @@ def test_deferred():
     </head><body></body></html>"""
     assert find_date(htmlstring, deferred_url_extractor=True) == "2017-09-01"
     assert find_date(htmlstring, deferred_url_extractor=False) == "2017-08-30"
+
+
+def test_uncertain_date_mode():
+    "Test the candidate-based uncertain date mode."
+    from htmldate import parse_uncertain_date, UncertainStatus
+
+    # same numeric date, three contexts
+    # 1. US region + English page: month-first is the only shared reading
+    result = parse_uncertain_date("03/04/2025", regions=["US"], language="en")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-03-04"
+    assert result.conflict is False
+
+    # 2. German region + German page: day-first
+    result = parse_uncertain_date("03/04/2025", regions=["DE"], language="de")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-03"
+
+    # 3. conflicting context (US supplier on a German page): stays undecided,
+    #    no majority vote — both candidates are kept
+    result = parse_uncertain_date("03/04/2025", regions=["US"], language="de")
+    assert result.status is UncertainStatus.AMBIGUOUS
+    assert result.conflict is True
+    assert result.resolved is None
+    assert {c.isoformat() for c in result.candidates} == {"2025-03-04", "2025-04-03"}
+
+    # no context at all: ambiguous as well
+    result = parse_uncertain_date("03/04/2025")
+    assert result.status is UncertainStatus.AMBIGUOUS
+    assert len(result.candidates) == 2
+
+    # explicit month text removes the ambiguity whatever the context
+    result = parse_uncertain_date("3 April 2025", regions=["US"], language="en")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-03"
+
+    # a day above 12 disambiguates on its own
+    result = parse_uncertain_date("13/04/2025")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-13"
+    assert any("MDY" in reason for reason in result.invalid)
+
+    # impossible under every order: reported as invalid
+    result = parse_uncertain_date("13/13/2025")
+    assert result.status is UncertainStatus.INVALID
+    assert len(result.invalid) == 2
+    assert result.candidates == []
+
+    # valid date excluded by the business range: reported separately
+    result = parse_uncertain_date(
+        "03/04/2025",
+        regions=["DE"],
+        min_date="2025-06-01",
+        max_date="2025-12-31",
+    )
+    assert result.status is UncertainStatus.OUT_OF_RANGE
+    assert result.resolved is None
+    assert [c.isoformat() for c in result.excluded] == ["2025-04-03"]
+
+    # one reading in range, the other out: range decides, no ambiguity left
+    result = parse_uncertain_date(
+        "03/04/2025", min_date="2025-03-15", max_date="2025-12-31"
+    )
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-03"
+
+    # identical readings merge into a single candidate
+    result = parse_uncertain_date("04/04/2025")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-04"
+    assert set(result.candidates[0].orders) == {"DMY", "MDY"}
+
+    # year-first is unambiguous
+    result = parse_uncertain_date("2025/04/03")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-04-03"
+
+    # nothing date-like
+    result = parse_uncertain_date("no date here")
+    assert result.status is UncertainStatus.NO_DATE
+
+    # language subtag acts as region evidence (en-US vs plain en)
+    result = parse_uncertain_date("03/04/2025", language="en-US")
+    assert result.status is UncertainStatus.UNIQUE
+    assert result.format() == "2025-03-04"
