@@ -21,6 +21,7 @@ import warnings
 import zipfile
 from collections import OrderedDict
 from collections.abc import Generator, Iterable
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -807,11 +808,52 @@ def set_environ(env_name: str, value: str | None) -> Generator[None, None, None]
                 os.environ[env_name] = old_value
 
 
-def should_bypass_proxies(url: str, no_proxy: str | None) -> bool:
-    """
-    Returns whether we should bypass proxies or not.
+@dataclass(frozen=True)
+class NoProxyMatch:
+    """A single NO_PROXY rule that matched the request hostname.
 
-    :rtype: bool
+    ``rule`` holds the entry exactly as written in the NO_PROXY value and
+    ``reason`` describes the comparison that succeeded, using the same logic
+    as :func:`should_bypass_proxies`.
+    """
+
+    rule: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class NoProxyEvaluation:
+    """Structured result of the NO_PROXY evaluation for one URL.
+
+    The :attr:`bypass` value is identical to what
+    :func:`should_bypass_proxies` returns; the other fields record the raw
+    NO_PROXY value that was in force, how it was split into rules, the first
+    matching rule (if any) and whether the platform ``proxy_bypass`` hook
+    also voted to bypass.
+    """
+
+    url: str
+    hostname: str | None
+    no_proxy: str | None
+    no_proxy_source: str | None
+    rules: tuple[str, ...]
+    match: NoProxyMatch | None
+    system_bypass: bool
+    system_bypass_source: str | None
+    bypass: bool
+
+    @property
+    def matched_rule(self) -> str | None:
+        return self.match.rule if self.match else None
+
+
+def _evaluate_no_proxy(url: str, no_proxy: str | None) -> NoProxyEvaluation:
+    """Evaluate NO_PROXY rules for ``url`` without duplicating the matching
+    logic used when a request is sent.
+
+    This walks the exact comparisons performed by
+    :func:`should_bypass_proxies` and records why each decision was made, so
+    diagnostic output can never diverge from the real proxy selection.
     """
 
     # Prioritize lowercase environment variables over uppercase
@@ -822,41 +864,76 @@ def should_bypass_proxies(url: str, no_proxy: str | None) -> bool:
     # First check whether no_proxy is defined. If it is, check that the URL
     # we're getting isn't in the no_proxy list.
     no_proxy_arg = no_proxy
+    no_proxy_source = None
     if no_proxy is None:
         no_proxy = get_proxy("no_proxy")
+        if no_proxy is not None:
+            no_proxy_source = (
+                "no_proxy" if os.environ.get("no_proxy") else "NO_PROXY"
+            )
+    else:
+        no_proxy_source = "argument"
+
     parsed = urlparse(url)
     hostname = parsed.hostname
 
     if hostname is None:
         # URLs don't always have hostnames, e.g. file:/// urls.
-        return True
+        return NoProxyEvaluation(
+            url=url,
+            hostname=None,
+            no_proxy=no_proxy,
+            no_proxy_source=no_proxy_source,
+            rules=(),
+            match=None,
+            system_bypass=False,
+            system_bypass_source=None,
+            bypass=True,
+        )
 
+    rules: tuple[str, ...] = ()
+    match: NoProxyMatch | None = None
     if no_proxy:
         # We need to check whether we match here. We need to see if we match
         # the end of the hostname, both with and without the port.
-        no_proxy_hosts = (host for host in no_proxy.replace(" ", "").split(",") if host)
+        rules = tuple(
+            host for host in no_proxy.replace(" ", "").split(",") if host
+        )
 
         if is_ipv4_address(hostname):
-            for proxy_ip in no_proxy_hosts:
+            for proxy_ip in rules:
                 if is_valid_cidr(proxy_ip):
                     if address_in_network(hostname, proxy_ip):
-                        return True
+                        match = NoProxyMatch(
+                            proxy_ip, f"IPv4 {hostname} inside CIDR {proxy_ip}"
+                        )
+                        break
                 elif hostname == proxy_ip:
                     # If no_proxy ip was defined in plain IP notation instead of cidr notation &
                     # matches the IP of the index
-                    return True
+                    match = NoProxyMatch(
+                        proxy_ip, f"IPv4 {hostname} equals rule {proxy_ip}"
+                    )
+                    break
         else:
             host_with_port = hostname
             if parsed.port:
                 host_with_port += f":{parsed.port}"
 
-            for host in no_proxy_hosts:
-                host = host.lstrip(".")
-                if hostname == host or host_with_port == host:
-                    return True
-                host = "." + host
-                if hostname.endswith(host) or host_with_port.endswith(host):
-                    return True
+            for host in rules:
+                stripped = host.lstrip(".")
+                if hostname == stripped or host_with_port == stripped:
+                    match = NoProxyMatch(
+                        host,
+                        f"hostname/host:port exactly equals rule {stripped}",
+                    )
+                    break
+                dotted = "." + stripped
+                if hostname.endswith(dotted) or host_with_port.endswith(dotted):
+                    match = NoProxyMatch(
+                        host, f"hostname/host:port is a subdomain of {dotted}"
+                    )
+                    break
 
     with set_environ("no_proxy", no_proxy_arg):
         try:
@@ -864,10 +941,28 @@ def should_bypass_proxies(url: str, no_proxy: str | None) -> bool:
         except (TypeError, socket.gaierror):
             bypass = False
 
-    if bypass:
-        return True
+    system_bypass_source = "proxy_bypass" if bypass else None
+    decision = bool(match is not None or bypass)
+    return NoProxyEvaluation(
+        url=url,
+        hostname=hostname,
+        no_proxy=no_proxy,
+        no_proxy_source=no_proxy_source,
+        rules=rules,
+        match=match,
+        system_bypass=bypass,
+        system_bypass_source=system_bypass_source,
+        bypass=decision,
+    )
 
-    return False
+
+def should_bypass_proxies(url: str, no_proxy: str | None) -> bool:
+    """
+    Returns whether we should bypass proxies or not.
+
+    :rtype: bool
+    """
+    return bool(_evaluate_no_proxy(url, no_proxy).bypass)
 
 
 def get_environ_proxies(url: str, no_proxy: str | None = None) -> dict[str, str]:

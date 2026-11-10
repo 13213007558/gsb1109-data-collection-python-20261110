@@ -650,6 +650,33 @@ any request to the given scheme and exact hostname.
 
 Note that proxy URLs must include the scheme.
 
+Diagnosing proxy routing
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the same request ends up using different proxies on two machines, use
+:func:`requests.diagnose_proxy_route` (or :meth:`Session.diagnose_proxy_route`)
+to see how the explicit ``proxies`` argument, the session's ``proxies``,
+proxy environment variables and ``NO_PROXY`` combine. Nothing is sent over the
+network and the session is not modified::
+
+    >>> import requests
+    >>> session = requests.Session()
+    >>> diagnosis = session.diagnose_proxy_route(
+    ...     'https://example.com/api',
+    ...     proxies={'no_proxy': 'example.com'},
+    ... )
+    >>> print(diagnosis)
+
+The report only contains redacted proxy addresses (scheme, host and port, with
+any userinfo replaced by ``***``), the ``NO_PROXY`` rule that matched together
+with the reason, and the exact mapping handed to the transport adapter. A
+machine-readable view is available via :meth:`ProxyRouteDiagnosis.to_dict`.
+
+The diagnosis runs the same resolution helpers used on the send path
+(``get_environ_proxies``, ``merge_setting``, ``resolve_proxies`` and
+``select_proxy``), so the reported mapping always matches the one the adapter
+actually receives; it is not a separate reimplementation of the rules.
+
 Finally, note that using a proxy for https connections typically requires your
 local machine to trust the proxy's root certificate. By default the list of
 certificates trusted by Requests can be found with::

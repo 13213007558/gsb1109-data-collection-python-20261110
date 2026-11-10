@@ -169,6 +169,7 @@ from .__version__ import (
     __version__,
 )
 from .api import delete, get, head, options, patch, post, put, request
+from .diagnostics import ProxyRouteDiagnosis, diagnose_proxy_route
 from .exceptions import (
     ConnectionError,
     ConnectTimeout,
@@ -191,6 +192,7 @@ __all__ = (
     "HTTPError",
     "JSONDecodeError",
     "PreparedRequest",
+    "ProxyRouteDiagnosis",
     "ReadTimeout",
     "Request",
     "RequestException",
@@ -201,6 +203,7 @@ __all__ = (
     "URLRequired",
     "codes",
     "delete",
+    "diagnose_proxy_route",
     "get",
     "head",
     "options",

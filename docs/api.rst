@@ -70,6 +70,16 @@ Lower-Lower-Level Classes
 .. autoclass:: requests.adapters.HTTPAdapter
    :inherited-members:
 
+
+Proxy Diagnostics
+-----------------
+
+.. autofunction:: diagnose_proxy_route
+
+.. autoclass:: requests.diagnostics.ProxyRouteDiagnosis
+   :members:
+
+
 Authentication
 --------------
 

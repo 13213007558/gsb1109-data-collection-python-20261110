@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 
     from . import _types as _t
     from .adapters import BaseAdapter
+    from .diagnostics import ProxyRouteDiagnosis
 
 # Preferred clock, based on which one is more accurate on a given system.
 if sys.platform == "win32":
@@ -866,6 +867,27 @@ class Session(SessionRedirectMixin):
         cert = merge_setting(cert, self.cert)
 
         return {"proxies": proxies, "stream": stream, "verify": verify, "cert": cert}
+
+    def diagnose_proxy_route(
+        self,
+        url: str,
+        proxies: dict[str, str] | None = None,
+    ) -> "ProxyRouteDiagnosis":
+        """Read-only explanation of which proxy a request to ``url`` would use.
+
+        This performs no network I/O and does not mutate the session. It runs
+        the exact proxy resolution helpers used by the send path and reports
+        how the explicit ``proxies`` argument, :attr:`proxies`, environment
+        variables and ``NO_PROXY`` combine, with credentials redacted.
+
+        :param url: URL the hypothetical request would be sent to.
+        :param proxies: the ``proxies`` mapping that would be passed to a
+            request method, or ``None``.
+        :rtype: requests.diagnostics.ProxyRouteDiagnosis
+        """
+        from .diagnostics import diagnose_proxy_route
+
+        return diagnose_proxy_route(url, proxies=proxies, session=self)
 
     def get_adapter(self, url: str) -> BaseAdapter:
         """
