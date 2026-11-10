@@ -49,6 +49,28 @@ The command-line interface accepts a local HTML file or a URL:
 python -m readability -u https://example.com
 ```
 
+### Selecting an article on multi-article pages
+
+Topic pages often concatenate several articles, and `summary()` alone only
+returns the highest scoring one. `Document.article_candidates()` lists the
+candidates instead. Each candidate keeps a stable `anchor` (an xpath that
+does not change when article lengths change), its `title`, `author`, own
+`text_length` (nested recommendation cards are not counted as part of the
+enclosing article), and `overlaps` with other candidates. Pass an anchor to
+`summary()` to extract exactly that article:
+
+```python
+>>> doc = Document(response.content)
+>>> candidates = doc.article_candidates()
+>>> doc.summary(anchor=candidates[0]["anchor"])
+```
+
+When the anchor matches no candidate, `Unparseable` is raised; when it
+matches several (for example a shared title), `readability.AmbiguousAnchor`
+is raised. Both carry the available candidates on their `candidates`
+attribute, so the caller can pick a more specific anchor instead of
+concatenating every article on the page.
+
 Run the real-page extraction benchmark with the default minimum F1 of 0.95:
 
 ```bash
@@ -73,6 +95,7 @@ allowlist sanitizer and an appropriate Content Security Policy.
 
 ## Change Log
 - 0.9
+  - Added `Document.article_candidates()` and `Document.summary(anchor=...)` for explicit article selection on multi-article (topic) pages.
   - Expanded the declared Python range through 3.14, added `lxml` 6 support, and updated packaging metadata for Markdown documentation and current `cssselect` releases.
   - Added `python -m readability` execution for local files and URLs.
   - Fixed bytes input and encoding detection.

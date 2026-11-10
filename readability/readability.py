@@ -25,6 +25,8 @@ from .debug import describe, text_content
 
 log = logging.getLogger("readability.readability")
 
+AUTHOR_FEATURES_RE = re.compile(r"author|byline", re.I)
+
 REGEXES = {
     "unlikelyCandidatesRe": re.compile(
         r"combx|comment|community|disqus|extra|foot|header|menu|remark|rss|shoutbox|sidebar|sponsor|ad-break|agegate|pagination|pager|popup|tweet|twitter",
@@ -68,6 +70,24 @@ REGEXES = {
 
 class Unparseable(ValueError):
     pass
+
+
+class AmbiguousAnchor(Unparseable):
+    """Raised when an anchor matches more than one article candidate.
+
+    The matching candidates are available on the ``candidates`` attribute,
+    so the caller can pick a more specific anchor instead of concatenating
+    every article on the page.
+    """
+
+    def __init__(self, anchor, candidates):
+        self.anchor = anchor
+        self.candidates = candidates
+        super().__init__(
+            "anchor {!r} matches {} article candidates".format(
+                anchor, len(candidates)
+            )
+        )
 
 
 def to_int(x):
@@ -163,6 +183,7 @@ class Document:
         .short_title() -- cleaned up title
         .content() -- full content
         .summary() -- cleaned up content
+        .article_candidates() -- list of article candidates with stable anchors
         """
         self.input = input
         self.html = None
@@ -242,13 +263,36 @@ class Document:
         """
         return clean_attributes(tounicode(self._html(), method="html"))
 
-    def summary(self, html_partial=False, keep_all_images=False):
+    def _prepare_document(self, ruthless=True):
+        """Parse a fresh copy of the document and score its paragraphs."""
+        self._html(True)
+        for i in self.tags(self.html, "script", "style", "noscript"):
+            i.drop_tree()
+        for i in self.tags(self.html, "body"):
+            i.set("id", "readabilityBody")
+        if ruthless:
+            self.remove_unlikely_candidates()
+        self.transform_misused_divs_into_paragraphs()
+        return self.score_paragraphs()
+
+    def summary(self, html_partial=False, keep_all_images=False, anchor=None):
         """
         Given a HTML file, extracts the text of the article.
 
         :param html_partial: return only the div of the document, don't wrap
                              in html and body tags.
         :param keep_all_images: Keep all images in summary.
+        :param anchor: stable anchor of the article to extract, as reported
+                       by .article_candidates() (an xpath such as
+                       "/html/body/article[2]", or a candidate title).
+                       When given, exactly that candidate is extracted
+                       instead of the highest scoring one, sibling articles
+                       are not merged into the output, and nested article
+                       candidates (such as recommendation cards) are removed
+                       from it. Raises AmbiguousAnchor when the anchor
+                       matches more than one candidate, and Unparseable when
+                       it matches none; both carry the available candidates
+                       on their ``candidates`` attribute.
 
         Warning: It mutates internal DOM representation of the HTML document,
         so it is better to call other API methods before this one.
@@ -256,28 +300,29 @@ class Document:
         try:
             ruthless = True
             while True:
-                self._html(True)
-                for i in self.tags(self.html, "script", "style", "noscript"):
-                    i.drop_tree()
-                for i in self.tags(self.html, "body"):
-                    i.set("id", "readabilityBody")
-                if ruthless:
-                    self.remove_unlikely_candidates()
-                self.transform_misused_divs_into_paragraphs()
-                candidates = self.score_paragraphs()
+                candidates = self._prepare_document(ruthless)
 
-                best_candidate = self.select_best_candidate(candidates)
-                if best_candidate:
-                    best_candidate = self.get_semantic_article_candidate(
-                        candidates, best_candidate
+                if anchor is not None:
+                    best_candidate = self.select_candidate_by_anchor(
+                        candidates, anchor
                     )
-                    best_candidate = self.get_semantic_main_candidate(
-                        candidates, best_candidate
-                    )
+                    self.drop_nested_candidates(best_candidate["elem"])
+                else:
+                    best_candidate = self.select_best_candidate(candidates)
+                    if best_candidate:
+                        best_candidate = self.get_semantic_article_candidate(
+                            candidates, best_candidate
+                        )
+                        best_candidate = self.get_semantic_main_candidate(
+                            candidates, best_candidate
+                        )
 
                 if best_candidate:
                     article = self.get_article(
-                        candidates, best_candidate, html_partial=html_partial
+                        candidates,
+                        best_candidate,
+                        html_partial=html_partial,
+                        merge_siblings=anchor is None,
                     )
                 else:
                     if ruthless:
@@ -305,17 +350,21 @@ class Document:
                 article_length = len(article_for_length)
                 retry_length = self.retry_length
                 of_acceptable_length = article_length >= retry_length
-                if ruthless and not of_acceptable_length:
+                if ruthless and not of_acceptable_length and anchor is None:
                     ruthless = False
                     # Loop through and try again.
                     continue
                 else:
                     return cleaned_article
+        except Unparseable:
+            raise
         except Exception as e:
             log.exception("error getting summary: ")
             raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
 
-    def get_article(self, candidates, best_candidate, html_partial=False):
+    def get_article(
+        self, candidates, best_candidate, html_partial=False, merge_siblings=True
+    ):
         # Now that we have the top candidate, look through its siblings for
         # content that might also be related.
         # Things like preambles, content split by ads that we removed, etc.
@@ -326,15 +375,18 @@ class Document:
         else:
             output = document_fromstring("<div/>")
         best_elem = best_candidate["elem"]
-        self.add_heading_preamble(
-            candidates, best_elem, sibling_score_threshold
-        )
-        self.merge_article_segments(
-            candidates, best_candidate, sibling_score_threshold
-        )
+        if merge_siblings:
+            self.add_heading_preamble(
+                candidates, best_elem, sibling_score_threshold
+            )
+            self.merge_article_segments(
+                candidates, best_candidate, sibling_score_threshold
+            )
         parent = best_elem.getparent()
         siblings = parent.getchildren() if parent is not None else [best_elem]
-        editorial_leads = self.get_editorial_leads(best_elem)
+        editorial_leads = (
+            self.get_editorial_leads(best_elem) if merge_siblings else []
+        )
         if html_partial:
             output_root = output
         else:
@@ -349,26 +401,28 @@ class Document:
                 continue
             if sibling is best_elem:
                 append = True
-            sibling_key = sibling  # HashableElement(sibling)
-            if (
-                sibling_key in candidates
-                and candidates[sibling_key]["content_score"] >= sibling_score_threshold
-            ):
-                append = True
-
-            if sibling.tag == "p":
-                link_density = self.get_link_density(sibling)
-                node_content = sibling.text or ""
-                node_length = len(node_content)
-
-                if node_length > 80 and link_density < 0.25:
-                    append = True
-                elif (
-                    node_length <= 80
-                    and link_density == 0
-                    and re.search(r"\.( |$)", node_content)
+            if merge_siblings:
+                sibling_key = sibling  # HashableElement(sibling)
+                if (
+                    sibling_key in candidates
+                    and candidates[sibling_key]["content_score"]
+                    >= sibling_score_threshold
                 ):
                     append = True
+
+                if sibling.tag == "p":
+                    link_density = self.get_link_density(sibling)
+                    node_content = sibling.text or ""
+                    node_length = len(node_content)
+
+                    if node_length > 80 and link_density < 0.25:
+                        append = True
+                    elif (
+                        node_length <= 80
+                        and link_density == 0
+                        and re.search(r"\.( |$)", node_content)
+                    ):
+                        append = True
 
             if append:
                 # We don't want to append directly to output, but the div
@@ -662,6 +716,162 @@ class Document:
         if nested_articles:
             best_candidate = nested_articles[0]
         return best_candidate
+
+    def article_candidates(self):
+        """List the article candidates found on the page.
+
+        Topic pages often concatenate several articles; this method exposes
+        them so the caller can pick one explicitly instead of relying on
+        .summary() returning only the highest scoring one.
+
+        Returns a list of dicts, ordered by descending content score, each
+        with the following keys:
+
+        - ``anchor``: stable xpath of the candidate element, usable as the
+          ``anchor`` argument of .summary() as long as the page structure
+          (not necessarily the article lengths) stays the same.
+        - ``title``: text of the first heading inside the candidate,
+          excluding nested candidates, or None.
+        - ``author``: byline found inside the candidate, excluding nested
+          candidates, or None.
+        - ``text_length``: length of the candidate's own text, excluding
+          nested candidates (so a nested recommendation card is not counted
+          as part of the enclosing article).
+        - ``content_score``: score of the candidate.
+        - ``overlaps``: anchors of other candidates that contain this one
+          or are contained by it.
+        - ``elem``: the candidate's element in the current internal DOM.
+        """
+        try:
+            candidates = self._prepare_document(ruthless=True)
+            return self._article_candidate_entries(candidates)
+        except Exception as e:
+            log.exception("error listing article candidates: ")
+            raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
+
+    def _article_candidate_entries(self, candidates):
+        root = self.html.getroottree()
+        elems = [
+            elem
+            for elem in self.tags(self.html, "article", "main")
+            if text_length(elem) >= self.min_text_length
+        ]
+        if not elems:
+            scored = sorted(
+                candidates.values(),
+                key=lambda candidate: candidate["content_score"],
+                reverse=True,
+            )
+            elems = [
+                candidate["elem"]
+                for candidate in scored[:5]
+                if text_length(candidate["elem"]) >= self.min_text_length
+            ]
+        descendant_map = {
+            elem: set(elem.iterdescendants()) for elem in elems
+        }
+        entries = []
+        for elem in elems:
+            descendants = descendant_map[elem]
+            nested = [
+                other
+                for other in elems
+                if other is not elem and other in descendants
+            ]
+            containing = [
+                other
+                for other in elems
+                if other is not elem and elem in descendant_map[other]
+            ]
+            excluded = set()
+            for other in nested:
+                excluded.add(other)
+                excluded.update(descendant_map[other])
+            if elem in candidates:
+                content_score = candidates[elem]["content_score"]
+            else:
+                content_score = self.score_node(elem)["content_score"]
+            entries.append({
+                "anchor": root.getpath(elem),
+                "title": self._candidate_title(elem, excluded),
+                "author": self._candidate_author(elem, excluded),
+                "text_length": max(
+                    text_length(elem)
+                    - sum(text_length(other) for other in nested),
+                    0,
+                ),
+                "content_score": content_score,
+                "overlaps": sorted(
+                    root.getpath(other) for other in nested + containing
+                ),
+                "elem": elem,
+            })
+        entries.sort(key=lambda entry: entry["content_score"], reverse=True)
+        return entries
+
+    def _candidate_title(self, elem, excluded):
+        for node in elem.iter():
+            if node in excluded:
+                continue
+            if node.tag in ("h1", "h2", "h3"):
+                text = clean(node.text_content() or "")
+                if text:
+                    return text
+        return None
+
+    def _candidate_author(self, elem, excluded):
+        for node in elem.iter():
+            if node in excluded:
+                continue
+            rel = (node.get("rel") or "").split()
+            itemprop = (node.get("itemprop") or "").split()
+            features = "{} {}".format(node.get("class", ""), node.get("id", ""))
+            if (
+                "author" in rel
+                or "author" in itemprop
+                or AUTHOR_FEATURES_RE.search(features)
+            ):
+                text = clean(node.text_content() or "")
+                if text and len(text) < 120:
+                    return text
+        return None
+
+    def select_candidate_by_anchor(self, candidates, anchor):
+        """Select the single article candidate identified by ``anchor``.
+
+        The anchor is matched against the candidates' stable anchors first
+        and their titles second. Raises Unparseable (with the available
+        candidates on its ``candidates`` attribute) when nothing matches,
+        and AmbiguousAnchor when more than one candidate matches.
+        """
+        entries = self._article_candidate_entries(candidates)
+        matches = [entry for entry in entries if entry["anchor"] == anchor]
+        if not matches:
+            matches = [entry for entry in entries if entry["title"] == anchor]
+        if not matches:
+            error = Unparseable(
+                "no article candidate matches anchor {!r}".format(anchor)
+            )
+            error.candidates = entries
+            raise error
+        if len(matches) > 1:
+            raise AmbiguousAnchor(anchor, matches)
+        elem = matches[0]["elem"]
+        candidate = candidates.get(elem)
+        if candidate is None:
+            candidate = {
+                "content_score": matches[0]["content_score"],
+                "elem": elem,
+            }
+            candidates[elem] = candidate
+        return candidate
+
+    def drop_nested_candidates(self, elem):
+        """Remove nested article candidates (e.g. recommendation cards)
+        from an explicitly selected article element."""
+        for nested in self.tags(elem, "article", "main"):
+            if text_length(nested) >= self.min_text_length:
+                nested.drop_tree()
 
     def get_link_density(self, elem):
         link_length = 0
