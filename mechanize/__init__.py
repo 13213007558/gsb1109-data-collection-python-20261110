@@ -22,6 +22,10 @@ from ._equiv import HTTPEquivParser
 # high-level stateful browser-style interface
 from ._mechanize import (Browser, BrowserStateError, FormNotFoundError,
                          History, LinkNotFoundError)
+# navigation policy
+from ._navigation import (DIRECT, LINK, REDIRECT, REFRESH,
+                          BaseNavigationPolicy, BlockedNavigation,
+                          NavigationDenied, OriginNavigationPolicy, origin_of)
 from ._opener import ContentTooShortError, OpenerFactory, urlretrieve
 from ._response import (make_response, response_seek_wrapper,
                         seek_wrapped_response)
@@ -116,6 +120,7 @@ __all__ = [
     'install_opener',
     'lwp_cookie_str',
     'make_response',
+    'origin_of',
     'request_host',
     'response_seek_wrapper',  # XXX deprecate in public interface?
     # XXX should probably use this internally in place of
@@ -128,6 +133,14 @@ __all__ = [
 
     # ClientForm API
     'AmbiguityError',
+    'BaseNavigationPolicy',
+    'BlockedNavigation',
+    'DIRECT',
+    'LINK',
+    'NavigationDenied',
+    'OriginNavigationPolicy',
+    'REDIRECT',
+    'REFRESH',
     'ControlNotFoundError',
     'ItemCountError',
     'ItemNotFoundError',

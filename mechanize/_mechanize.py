@@ -18,6 +18,8 @@ from . import _request, _response, _rfc3986, _sockettimeout, _urllib2_fork
 from ._clientcookie import Cookie
 from ._headersutil import normalize_header_name
 from ._html import Factory
+from ._navigation import (LINK, NavigationDenied, request_source,
+                          tag_request)
 from ._useragent import UserAgentBase
 from .polyglot import pathname2url, HTTPError, is_string, iteritems
 from ._response import make_response
@@ -178,6 +180,8 @@ class Browser(UserAgentBase):
             setattr(ans._factory, attr, getattr(self._factory, attr))
         ans.request_class = self.request_class
         ans._history = copy.copy(self._history)
+        ans._navigation_policy = self._navigation_policy
+        ans.blocked_navigations = self.blocked_navigations[:]
         return ans
 
     def close(self):
@@ -202,6 +206,22 @@ class Browser(UserAgentBase):
         """Set whether to add Referer header to each request."""
         self._set_handler("_referer", handle)
         self._handle_referer = bool(handle)
+
+    def set_navigation_policy(self, policy):
+        """Restrict navigation to the origins approved by ``policy``.
+
+        Pass a navigation policy (see :mod:`mechanize._navigation`) to approve
+        or refuse each request according to its target origin, navigation
+        mechanism and source, or pass ``None`` to remove the restriction and
+        restore the default, unrestricted behaviour.  The policy is consulted
+        before every request, including HTTP redirects, ``Refresh`` /
+        ``http-equiv`` refreshes and links, so a refused navigation never
+        reaches the network and leaves the current page unchanged.
+
+        Refused navigations are recorded in ``self.blocked_navigations``.
+
+        """
+        self._navigation_policy = policy
 
     def _add_referer_header(self, request, origin_request=True):
         if self.request is None:
@@ -279,12 +299,46 @@ class Browser(UserAgentBase):
         if visit is None:
             visit = True
 
+        # Check the navigation policy before any browser state (history,
+        # current request/response) is changed and before the request is sent,
+        # so a refused navigation leaves the current page intact.  Redirects
+        # and refreshes triggered by the resulting response are checked again
+        # at the opener level before each further request.
+        source_type, source_url = request_source(request)
+        self.check_navigation(request, source_type, source_url)
+
+        previous_request = previous_response = None
+        previous_history_len = 0
         if visit:
+            if self._navigation_policy is not None and \
+                    self._response is not None:
+                # Buffer the current page so it can still be inspected if a
+                # later redirect/refresh in this navigation is refused.  The
+                # read_complete flag is restored so buffering does not change
+                # back()/reload() behaviour.  Without an installed policy the
+                # historical code path is left untouched.
+                was_complete = self._response.read_complete
+                position = self._response.tell()
+                self._response.seek(0, 2)
+                self._response.read_complete = was_complete
+                self._response.seek(position)
+            previous_request = self.request
+            previous_response = self._response
+            previous_history_len = len(self._history._history)
             self._visit_request(request, update_history)
 
         success = True
         try:
             response = UserAgentBase.open(self, request, data)
+        except NavigationDenied:
+            # A redirect or refresh somewhere in this navigation was refused
+            # before its request was sent.  Restore the page that was on
+            # display rather than leaving a half-navigated browser behind.
+            if visit:
+                self._restore_previous_page(
+                    previous_request, previous_response,
+                    previous_history_len)
+            raise
         except HTTPError as error:
             success = False
             if error.fp is None:  # not a response
@@ -383,6 +437,12 @@ class Browser(UserAgentBase):
         # we want self.request to be assigned even if UserAgentBase.open
         # fails
         self.request = request
+
+    def _restore_previous_page(self, request, response, history_len):
+        """Undo a navigation whose redirect/refresh was refused."""
+        del self._history._history[history_len:]
+        self.request = request
+        self._set_response(response, False)
 
     def set_html(self, html, url="http://example.com/"):
         """Set the response to dummy with given HTML, and URL if given.
@@ -712,7 +772,9 @@ class Browser(UserAgentBase):
                 raise ValueError(
                     "either pass a Link, or keyword arguments, not both")
         request = self.request_class(link.absolute_url)
-        return self._add_referer_header(request)
+        request = self._add_referer_header(request)
+        return tag_request(request, LINK,
+                           self._response.geturl() if self._response else None)
 
     def follow_link(self, link=None, **kwds):
         """Find a link and :meth:`open()` it.

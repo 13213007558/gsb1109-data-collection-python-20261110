@@ -49,6 +49,7 @@ from io import BufferedReader, BytesIO
 from . import _rfc3986
 from ._clientcookie import CookieJar
 from ._headersutil import normalize_header_name
+from ._navigation import REDIRECT, REFRESH, tag_request
 from ._response import closeable_response
 from .polyglot import (HTTPConnection, HTTPError, HTTPSConnection, URLError,
                        as_unicode, create_response_info, ftpwrapper,
@@ -652,6 +653,12 @@ class HTTPRedirectHandler(BaseHandler):
         else:
             visited = new.redirect_dict = req.redirect_dict = {}
         visited[newurl] = visited.get(newurl, 0) + 1
+
+        # Record what produced this request so the navigation policy can tell
+        # HTTP redirects apart from links, refreshes or direct calls.  The
+        # policy itself is enforced by the opener before the request is sent.
+        source_type = REFRESH if code == "refresh" else REDIRECT
+        tag_request(new, source_type, req.get_full_url())
 
         # Don't close the fp until we are sure that we won't use it
         # with HTTPError.

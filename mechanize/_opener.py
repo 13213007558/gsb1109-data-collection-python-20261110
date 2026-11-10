@@ -19,6 +19,7 @@ from . import _response
 from . import _rfc3986
 from . import _sockettimeout
 from . import _urllib2_fork
+from ._navigation import NavigationGuardMixin, request_source
 from ._request import Request
 from ._util import isstringlike
 from .polyglot import HTTPError, URLError, iteritems, is_class
@@ -43,7 +44,7 @@ def set_request_attr(req, name, value, default):
         setattr(req, name, value)
 
 
-class OpenerDirector(_urllib2_fork.OpenerDirector):
+class OpenerDirector(NavigationGuardMixin, _urllib2_fork.OpenerDirector):
 
     def __init__(self):
         _urllib2_fork.OpenerDirector.__init__(self)
@@ -55,6 +56,9 @@ class OpenerDirector(_urllib2_fork.OpenerDirector):
         self._any_response = {}
         self._handler_index_valid = True
         self._tempfiles = []
+        # None means no navigation restrictions (historical behaviour)
+        self._navigation_policy = None
+        self.blocked_navigations = []
 
     def add_handler(self, handler):
         if not hasattr(handler, "add_parent"):
@@ -170,6 +174,12 @@ class OpenerDirector(_urllib2_fork.OpenerDirector):
     def open(self, fullurl, data=None,
              timeout=_sockettimeout._GLOBAL_DEFAULT_TIMEOUT):
         req = self._request(fullurl, data, None, timeout)
+        # Enforce the navigation policy before any processor runs and before
+        # the request is sent.  Redirect and refresh handlers funnel their
+        # follow-up requests back through here, so all navigation mechanisms
+        # are checked in exactly one place.
+        source_type, source_url = request_source(req)
+        self.check_navigation(req, source_type, source_url)
         req_scheme = req.get_type()
 
         self._maybe_reindex_handlers()

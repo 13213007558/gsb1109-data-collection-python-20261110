@@ -19,7 +19,66 @@ Using custom CA certificates
 
 mechanize supports the same mechanism for using custom CA certificates as
 python >= 2.7.9. To change the certificates a mechanize browser instance uses,
-call the :meth:`mechanize.Browser.set_ca_data()` method on it. 
+call the :meth:`mechanize.Browser.set_ca_data()` method on it.
+
+.. _navigation_policy:
+
+Restricting navigation to approved origins
+------------------------------------------
+
+A robot is usually only meant to operate inside a specific set of sites, but
+HTTP redirects, ``Refresh`` / ``http-equiv`` refreshes and ordinary page links
+can all take the browser somewhere else. A navigation policy lets a caller
+approve or refuse each request based on its **target origin**, the **mechanism**
+that triggered it and its **source**, before the request is sent.
+
+Call :meth:`mechanize.Browser.set_navigation_policy()` with an
+:class:`mechanize.OriginNavigationPolicy` to allow only an explicit, exact set
+of origins.  Origin matching is exact: approving ``http://example.com`` does
+not approve ``http://www.example.com`` (subdomains are never assumed
+trustworthy), ``https://example.com`` (different scheme) or a different port.
+The policy performs no network address scanning.
+
+.. code-block:: python
+
+    import mechanize
+
+    browser = mechanize.Browser()
+    browser.set_navigation_policy(
+        mechanize.OriginNavigationPolicy([
+            "http://example.com",
+            "https://example.com",
+        ]))
+
+The same rule is applied identically no matter how a URL is reached:
+
+* direct calls such as :meth:`~mechanize.Browser.open()`,
+  :meth:`~mechanize.Browser.submit()` and
+  :meth:`~mechanize.Browser.open_novisit()` (mechanism
+  :data:`mechanize.DIRECT`),
+* links followed with :meth:`~mechanize.Browser.follow_link()`
+  (:data:`mechanize.LINK`),
+* HTTP 30x redirections (:data:`mechanize.REDIRECT`),
+* ``Refresh`` headers and HTML ``http-equiv`` meta refreshes
+  (:data:`mechanize.REFRESH`).
+
+Every check happens before the request is made, so a refused URL is never
+fetched.  A refused navigation raises :class:`mechanize.NavigationDenied` (a
+subclass of :class:`mechanize.URLError`) whose ``record`` attribute, and the
+browser's ``blocked_navigations`` list, hold a
+:class:`mechanize.BlockedNavigation` describing the target, the mechanism and
+the source for troubleshooting.  The page currently on display is left in
+place, including when a redirect or refresh several hops into a navigation is
+refused.
+
+For finer control, subclass :class:`mechanize.BaseNavigationPolicy` and
+implement ``allow(target_origin, target_url, source_type, source_origin,
+source_url)`` returning an ``(allowed, reason)`` pair -- for example to permit
+user-driven links while denying automatic redirects.
+
+Pass ``None`` to :meth:`~mechanize.Browser.set_navigation_policy()` to remove
+the restriction.  With no policy installed (the default) every navigation is
+allowed, preserving the historical behaviour.
 
 .. _debugging:
 
