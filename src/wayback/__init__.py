@@ -7,8 +7,13 @@ from ._models import (  # noqa
     Memento,
 )
 
+from ._progress import SearchProgress  # noqa
+
 from ._client import (  # noqa
     Mode,
+    SearchResults,
     WaybackClient,
     WaybackSession,
 )
+
+from .exceptions import ResumeKeyError  # noqa

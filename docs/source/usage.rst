@@ -116,6 +116,65 @@ We picked up a couple additional occurrences that the original count missed.
    __cassette.__exit__()
 
 
+Resuming a long search across runs
+----------------------------------
+
+A search over many years of captures can take a long time and may be
+interrupted (a dropped connection, a restart, a rate-limit pause). Rather than
+starting again from the first page, you can track explicit, saveable progress
+with the ``track_progress`` argument and the :class:`wayback.SearchProgress`
+object exposed on the results:
+
+.. code-block:: python
+
+   results = client.search('nasa.gov', from_date=..., to_date=...,
+                           track_progress=True)
+   for record in results:
+       handle(record)
+       # Only a record you confirm here counts as finished.
+       results.progress.mark_processed(record)
+       results.progress.save('search-progress.json')
+
+In a later process, load the progress and pass it back to ``search``. The
+search is bound to the original query parameters (re-passing different
+arguments raises ``ValueError``), records you never confirmed are re-delivered
+first from the saved data, and repeated page-boundary records are
+de-duplicated:
+
+.. code-block:: python
+
+   progress = wayback.SearchProgress.load('search-progress.json')
+   results = client.search('nasa.gov', progress=progress)  # args must match
+   for record in results:
+       handle(record)
+       progress.mark_processed(record)
+       progress.save('search-progress.json')
+
+A search is only reported complete (``progress.is_complete``) once the server
+has no more pages *and* every delivered record has been confirmed with
+``mark_processed``.
+
+This continues the *live* CDX index, not a fixed snapshot: if new captures
+matching the query are added while the search is paused, they can appear after
+resuming. The server-side cursor (``resumeKey``) is opaque and can expire or be
+invalidated. When that happens, ``search`` raises
+:class:`wayback.exceptions.ResumeKeyError`, whose message lists two executable
+recoveries -- restart the full query, or continue without the cursor from the
+earliest unconfirmed (or last confirmed) boundary:
+
+.. code-block:: python
+
+   try:
+       results = client.search(progress=progress)
+   except wayback.ResumeKeyError as error:
+       # Option A: re-run the full original query.
+       results = client.search(track_progress=True,
+                               **error.progress.to_search_kwargs())
+       # Option B: continue from a safe date boundary, no old cursor.
+       results = client.search(track_progress=True,
+                               **error.progress.to_boundary_kwargs())
+
+
 API Documentation
 =================
 
@@ -127,6 +186,16 @@ Memento API. We implement a Python client that can speak both.
 
     .. automethod:: search
     .. automethod:: get_memento
+
+.. autoclass:: wayback.SearchResults
+
+.. autoclass:: wayback.SearchProgress
+
+    .. automethod:: save
+    .. automethod:: load
+    .. automethod:: mark_processed
+    .. automethod:: to_search_kwargs
+    .. automethod:: to_boundary_kwargs
 
 .. autoclass:: wayback.CdxRecord
 
@@ -158,6 +227,8 @@ Exception Classes
 .. autoclass:: wayback.exceptions.BlockedByRobotsError
 
 .. autoclass:: wayback.exceptions.BlockedSiteError
+
+.. autoclass:: wayback.exceptions.ResumeKeyError
 
 .. autoclass:: wayback.exceptions.MementoPlaybackError
 

@@ -8,8 +8,16 @@ from unittest import mock
 from .support import create_vcr
 from .._utils import SessionClosedError
 from .._models import CdxRecord, Mode
-from .._client import WaybackSession, WaybackClient
-from ..exceptions import BlockedSiteError, MementoPlaybackError, NoMementoError, RateLimitError
+from .._client import WaybackSession, WaybackClient, SearchResults, CDX_SEARCH_URL
+from ..exceptions import (
+    BlockedSiteError,
+    MementoPlaybackError,
+    NoMementoError,
+    RateLimitError,
+    ResumeKeyError,
+    WaybackException,
+)
+from wayback import SearchProgress
 
 
 ia_vcr = create_vcr()
@@ -296,6 +304,326 @@ def test_search_parses_all_fields(test_client, requests_mock):
     assert record.statuscode == 200
     assert record.digest == 'T6CDCO73TS77BY67HLKYFLHKT2APUM5Y'
     assert record.length == 24186
+
+
+def _cdx_line(name, timestamp, n, original=None):
+    original = original or f'http://example.com/{name}'
+    return f'com,example)/{name} {timestamp} {original} text/html 200 DIGEST{n} {1000 + n}'
+
+
+def _cdx_page(lines, resume=None):
+    return '\n'.join(lines) + (f'\n\n{resume}' if resume else '')
+
+
+def test_search_without_progress_tracking_has_none_progress(test_client, requests_mock):
+    requests_mock.get(
+        CDX_SEARCH_URL,
+        [{'status_code': 200, 'text': _cdx_page([_cdx_line('a', '20010101000000', 1)])}],
+    )
+    results = test_client.search('http://example.com')
+
+    assert isinstance(results, SearchResults)
+    assert results.progress is None
+    assert len(list(results)) == 1
+
+
+def test_search_track_progress_records_state_and_completion(test_client, requests_mock):
+    requests_mock.get(
+        CDX_SEARCH_URL,
+        [
+            {
+                'status_code': 200,
+                'text': _cdx_page(
+                    [_cdx_line('a', '20010101000000', 1), _cdx_line('b', '20010102000000', 2)]
+                ),
+            }
+        ],
+    )
+    results = test_client.search('http://example.com', track_progress=True)
+    progress = results.progress
+    assert isinstance(progress, SearchProgress)
+
+    records = list(results)
+    assert progress.server_complete
+    assert not progress.is_complete  # records not yet confirmed by the consumer
+    assert progress.seen_count == 2
+
+    for record in records:
+        progress.mark_processed(record)
+    assert progress.is_complete
+    assert progress.processed_count == 2
+
+
+def test_search_resume_redelivers_unconfirmed_and_dedupes_boundary(test_client, requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    line_d = _cdx_line('d', '20010104000000', 4)
+    page1 = _cdx_page([line_a, line_b], resume='KEY2')
+    page2 = _cdx_page([line_b, line_c], resume='KEY3')
+    page3 = _cdx_page([line_c, line_d])
+    # Process one consumes the first two pages; process two re-requests the
+    # last two from the saved cursor.
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': page1},
+        {'status_code': 200, 'text': page2},
+        {'status_code': 200, 'text': page2},
+        {'status_code': 200, 'text': page3},
+    ])
+
+    # First "process": cross the first page boundary, then pause after three
+    # records while confirming only `a` (`b` and `c` stay pending).
+    first = test_client.search('http://example.com', limit=2, track_progress=True)
+    first_records = list(islice(first, 3))
+    assert [r.original.rsplit('/', 1)[-1] for r in first_records] == ['a', 'b', 'c']
+    assert first.progress.resume_key == 'KEY2'
+    first.progress.mark_processed(first_records[0])
+    saved = first.progress.to_dict()
+    first.close()
+
+    # Second "process" resumes from the saved cursor.
+    progress = SearchProgress.from_dict(saved)
+    resumed_records = list(test_client.search('http://example.com', limit=2, progress=progress))
+    resumed_names = [r.original.rsplit('/', 1)[-1] for r in resumed_records]
+
+    # `b` and `c` are re-delivered locally first; the cursor request replays
+    # them but the guard suppresses duplicates, leaving only `d` as new.
+    assert resumed_names == ['b', 'c', 'd']
+    assert len(resumed_records) == len(set(resumed_records))
+    for record in resumed_records:
+        progress.mark_processed(record)
+    assert progress.is_complete
+
+    # The resumed run's first request carried the saved cursor.
+    assert requests_mock.request_history[2].qs['resumekey'] == ['key2']
+
+
+def test_search_resume_mid_page_has_no_missing_or_duplicate(test_client, requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    line_d = _cdx_line('d', '20010104000000', 4)
+    page1 = _cdx_page([line_a, line_b, line_c], resume='KEY2')
+    page2 = _cdx_page([line_c, line_d])
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': page1},
+        {'status_code': 200, 'text': page2},
+        # The resumed run re-requests the still-unfinished first page.
+        {'status_code': 200, 'text': page1},
+        {'status_code': 200, 'text': page2},
+    ])
+
+    first = test_client.search('http://example.com', limit=3, track_progress=True)
+    got = list(islice(first, 2))  # interrupted in the middle of the first page
+    first.progress.mark_processed(got[0])  # only `a` confirmed
+    assert first.progress.resume_key is None  # page never finished, so no cursor
+    saved = first.progress.to_dict()
+    first.close()
+
+    progress = SearchProgress.from_dict(saved)
+    resumed = list(test_client.search('http://example.com', limit=3, progress=progress))
+    names = [r.original.rsplit('/', 1)[-1] for r in resumed]
+    # `b` re-delivered locally, then `c` and `d` from the replayed pages.
+    assert names == ['b', 'c', 'd']
+    assert len(names) == len(set(names))
+
+
+def test_search_resume_binds_original_query_parameters(test_client, requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    page1 = _cdx_page([line_a, line_b], resume='KEY2')
+    page2_open = _cdx_page([line_b, line_c], resume='KEY3')
+    page2_terminal = _cdx_page([line_b, line_c])
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': page1},
+        {'status_code': 200, 'text': page2_open},
+        {'status_code': 200, 'text': page2_terminal},
+    ])
+
+    first = test_client.search(
+        'http://example.com', limit=2, from_date=datetime(2001, 1, 1), to_date=datetime(2001, 2, 1),
+        track_progress=True,
+    )
+    records = list(islice(first, 3))  # cross the boundary so KEY2 is captured
+    for record in records:
+        first.progress.mark_processed(record)
+    saved = first.progress.to_dict()
+    first.close()
+
+    progress = SearchProgress.from_dict(saved)
+    list(
+        test_client.search(
+            'http://example.com',
+            limit=2,
+            from_date=datetime(2001, 1, 1),
+            to_date=datetime(2001, 2, 1),
+            progress=progress,
+        )
+    )
+    sent = requests_mock.request_history[2].qs
+    assert sent['url'] == ['http://example.com']
+    assert sent['limit'] == ['2']
+    assert sent['from'] == ['20010101000000']
+    assert sent['to'] == ['20010201000000']
+    assert sent['resumekey'] == ['key2']
+
+
+def test_search_resume_rejects_different_query(test_client, requests_mock):
+    requests_mock.get(
+        CDX_SEARCH_URL,
+        [{'status_code': 200, 'text': _cdx_page([_cdx_line('a', '20010101000000', 1)], resume='KEY2')}],
+    )
+    first = test_client.search('http://example.com', track_progress=True)
+    next(first)
+    progress = SearchProgress.from_dict(first.progress.to_dict())
+
+    with pytest.raises(ValueError):
+        test_client.search('http://different.example', progress=progress)
+    assert len(requests_mock.request_history) == 1  # no request for the mismatched search
+
+
+def test_search_resume_stale_key_raises_resume_key_error(test_client, requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': _cdx_page([line_a, line_b], resume='KEY2')},
+        {'status_code': 200, 'text': _cdx_page([line_b, line_c], resume='KEY3')},
+        {'status_code': 400, 'text': 'invalid resume key'},
+    ])
+    first = test_client.search('http://example.com', limit=2, track_progress=True)
+    records = list(islice(first, 3))  # cross the boundary so the cursor is saved
+    for record in records:
+        first.progress.mark_processed(record)
+    progress = SearchProgress.from_dict(first.progress.to_dict())
+    first.close()
+
+    with pytest.raises(ResumeKeyError) as excinfo:
+        list(test_client.search('http://example.com', limit=2, progress=progress))
+    assert excinfo.value.progress is progress
+    assert 'track_progress=True' in str(excinfo.value)
+
+
+def test_search_resume_server_error_is_not_treated_as_stale_key(requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': _cdx_page([line_a, line_b], resume='KEY2')},
+        {'status_code': 200, 'text': _cdx_page([line_b, line_c], resume='KEY3')},
+        # A transient server error: the saved cursor may still be valid, so this
+        # must not be reported as an invalid resumeKey.
+        {'status_code': 500, 'text': 'internal error'},
+    ])
+    # No retries so the 500 surfaces immediately instead of being re-attempted.
+    session = WaybackSession(retries=0, search_calls_per_second=0, memento_calls_per_second=0)
+    client = WaybackClient(session)
+    try:
+        first = client.search('http://example.com', limit=2, track_progress=True)
+        records = list(islice(first, 3))
+        for record in records:
+            first.progress.mark_processed(record)
+        progress = SearchProgress.from_dict(first.progress.to_dict())
+        first.close()
+
+        with pytest.raises(WaybackException) as excinfo:
+            list(client.search('http://example.com', limit=2, progress=progress))
+        assert not isinstance(excinfo.value, ResumeKeyError)
+        # The cursor is preserved untouched so a retry can reuse it.
+        assert progress.resume_key == 'KEY2'
+    finally:
+        client.close()
+
+
+def test_search_resume_empty_body_marks_search_complete(test_client, requests_mock):
+    line_a = _cdx_line('a', '20010101000000', 1)
+    line_b = _cdx_line('b', '20010102000000', 2)
+    line_c = _cdx_line('c', '20010103000000', 3)
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': _cdx_page([line_a, line_b], resume='KEY2')},
+        {'status_code': 200, 'text': _cdx_page([line_b, line_c], resume='KEY3')},
+        {'status_code': 200, 'text': ''},
+    ])
+    first = test_client.search('http://example.com', limit=2, track_progress=True)
+    records = list(islice(first, 3))  # open cursor KEY2, all records confirmed
+    for record in records:
+        first.progress.mark_processed(record)
+    progress = SearchProgress.from_dict(first.progress.to_dict())
+    first.close()
+
+    resumed = list(test_client.search('http://example.com', limit=2, progress=progress))
+    assert resumed == []
+    assert progress.server_complete
+    assert progress.is_complete
+
+
+def test_search_resume_dedupes_boundary_with_normalized_port(test_client, requests_mock):
+    # The wire form keeps the default :80 port; the client normalizes it away.
+    # Replay detection must still key on the raw wire line.
+    raw_a = _cdx_line('a', '20010101000000', 1, original='http://example.com:80/a')
+    raw_b = _cdx_line('b', '20010102000000', 2, original='http://example.com:80/b')
+    raw_c = _cdx_line('c', '20010103000000', 3, original='http://example.com:80/c')
+    page1 = _cdx_page([raw_a, raw_b], resume='KEY2')
+    page2 = _cdx_page([raw_b, raw_c], resume='KEY3')
+    requests_mock.get(CDX_SEARCH_URL, [
+        {'status_code': 200, 'text': page1},
+        {'status_code': 200, 'text': page2},
+        # Resumed run re-requests from KEY2; the raw `b` line must be suppressed.
+        {'status_code': 200, 'text': _cdx_page([raw_b, raw_c])},
+    ])
+    first = test_client.search('http://example.com', limit=2, track_progress=True)
+    records = list(islice(first, 3))  # a, b, then cross into page 2 for c
+    for record in records:
+        first.progress.mark_processed(record)
+    progress = SearchProgress.from_dict(first.progress.to_dict())
+    first.close()
+
+    resumed = list(test_client.search('http://example.com', limit=2, progress=progress))
+    # Both replayed wire lines (`b` and `c`) are recognized and suppressed.
+    assert resumed == []
+    assert progress.is_complete
+
+
+def test_search_progress_invalid_type_raises(test_client):
+    with pytest.raises(TypeError):
+        test_client.search('http://example.com', progress={'not': 'a progress object'})
+
+
+def test_search_resume_across_processes_matches_full_results(test_client):
+    search_kwargs = dict(
+        url='cnn.com', from_date=datetime(2001, 4, 10), to_date=datetime(2001, 5, 10), limit=25
+    )
+
+    # Reference: a single, uninterrupted traversal.
+    with ia_vcr.use_cassette('test_search_multipage'):
+        reference = [
+            (record.urlkey, record.timestamp)
+            for record in test_client.search(**search_kwargs)
+        ]
+
+    # First "process": stop partway through, leaving some records unconfirmed.
+    with ia_vcr.use_cassette('test_search_multipage'):
+        interrupted = test_client.search(track_progress=True, **search_kwargs)
+        fetched = list(islice(interrupted, 40))
+        for record in fetched[:37]:
+            interrupted.progress.mark_processed(record)
+        saved = interrupted.progress.to_dict()
+        interrupted.close()
+
+    # Second "process": continue from the saved progress as if restarted.
+    with ia_vcr.use_cassette('test_search_multipage'):
+        progress = SearchProgress.from_dict(saved)
+        resumed = list(test_client.search(progress=progress, **search_kwargs))
+        for record in resumed:
+            progress.mark_processed(record)
+
+    combined = [(record.urlkey, record.timestamp) for record in fetched[:37]] + [
+        (record.urlkey, record.timestamp) for record in resumed
+    ]
+    assert len(combined) == len(set(combined))  # no boundary duplicates
+    assert combined == reference  # nothing missing, original order preserved
+    assert progress.is_complete
 
 
 @ia_vcr.use_cassette()

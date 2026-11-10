@@ -5,6 +5,10 @@ Release History
 In Development
 --------------
 
+- Added saveable, resumable progress for long, paged :meth:`wayback.WaybackClient.search` runs. Pass ``track_progress=True`` to receive a :class:`wayback.SearchProgress` on the results (``results.progress``), or pass a previously saved progress back to ``search`` to resume in another process. Progress is explicitly persisted with ``SearchProgress.save()``/``.load()`` (JSON), stays bound to the original query parameters, retains the confirmed page boundary and server-side ``resumeKey``, and de-duplicates repeated boundary records -- including when a run is interrupted in the middle of a page.
+
+  Records handed to your code are not counted as finished until you confirm them with ``SearchProgress.mark_processed()``; unconfirmed records are re-delivered from local progress before any new request. Because the CDX index is live, resuming reflects captures added while paused rather than reproducing a fixed snapshot. If the saved ``resumeKey`` has expired or been invalidated, :meth:`wayback.WaybackClient.search` now raises :class:`wayback.exceptions.ResumeKeyError`, whose message gives two executable recovery options (full restart, or continue from the earliest unconfirmed/last confirmed boundary without the old cursor).
+
 - Added a “funding” link to the project’s PyPI listing. You can donate to EDGI’s work (including this project) at https://envirodatagov.org/donate/. (:issue:`222`)
 
 

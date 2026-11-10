@@ -34,6 +34,7 @@ from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutEr
 from warnings import warn
 from . import _utils, __version__
 from ._models import CdxRecord, Memento, Mode
+from ._progress import SearchProgress
 from .exceptions import (
     WaybackException,
     UnexpectedResponseFormat,
@@ -503,6 +504,37 @@ class WaybackSession(_utils.DisableAfterCloseSession, requests.Session):
 
 # TODO: add retry, backoff, cross_thread_backoff, and rate_limit options that
 # create a custom instance of urllib3.utils.Retry
+class SearchResults:
+    """
+    An iterator over the :class:`CdxRecord` results of a paged search.
+
+    This wraps the internal generator so that the search's
+    :class:`wayback.SearchProgress` can be exposed as the :attr:`progress`
+    attribute while preserving ordinary generator behavior, including the
+    generator's return value (the total count of results) when the iterator is
+    exhausted.
+    """
+
+    def __init__(self, generator, progress=None):
+        self._generator = generator
+        self.progress = progress
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._generator)
+
+    def close(self):
+        return self._generator.close()
+
+    def send(self, value):
+        return self._generator.send(value)
+
+    def throw(self, *args):
+        return self._generator.throw(*args)
+
+
 class WaybackClient(_utils.DepthCountedContext):
     """
     A client for retrieving data from the Internet Archive's Wayback Machine.
@@ -541,6 +573,8 @@ class WaybackClient(_utils.DepthCountedContext):
         collapse=None,
         resolve_revisits=True,
         skip_malformed_results=True,
+        progress=None,
+        track_progress=False,
         # Deprecated Parameters
         matchType=None,
         fastLatest=None,
@@ -660,11 +694,42 @@ class WaybackClient(_utils.DepthCountedContext):
             ``http://mailto:someone@domain.com`` or
             ``http://data:image/jpeg;base64,AF34...`` and so on. This is a
             filter performed client side and is not a CDX API argument.
+        progress : wayback.SearchProgress, optional
+            Persistent progress for a search that may need to be resumed in a
+            later process. To start a resumable search, either pass
+            ``track_progress=True`` or provide a fresh
+            :class:`wayback.SearchProgress`. To resume an interrupted search,
+            load a previously saved progress object and pass it here.
+
+            When provided, the search is bound to the query recorded in the
+            progress: the other search arguments (``url``, ``from_date``, etc.)
+            must match that query or a :class:`ValueError` is raised. On resume,
+            any records the consumer had not yet confirmed via
+            :meth:`SearchProgress.mark_processed` are re-delivered from the
+            locally stored progress before any new page is requested, so an
+            unconfirmed record is never counted as finished. The progress also
+            records the confirmed page boundary so the record the CDX server
+            repeats at the start of each subsequent page is de-duplicated.
+
+            Note this is not a fixed snapshot: the CDX index is live, and
+            captures added while a search is paused can appear after resuming.
+            If the saved server-side cursor has expired, a
+            :class:`wayback.exceptions.ResumeKeyError` is raised whose message
+            lists executable recovery options.
+        track_progress : bool, default: False
+            If true (and ``progress`` was not given), create and attach a new
+            :class:`wayback.SearchProgress`. It is available while iterating
+            via the generator's ``progress`` attribute (``search(...).progress``)
+            and can be saved at any time with
+            :meth:`SearchProgress.save`.
 
         Raises
         ------
         UnexpectedResponseFormat
             If the CDX response was not parseable.
+        ResumeKeyError
+            If a saved progress's server-side ``resumeKey`` is no longer valid
+            and the search cannot continue from its old boundary.
 
         Yields
         ------
@@ -743,80 +808,171 @@ class WaybackClient(_utils.DepthCountedContext):
                 else:
                     query[key] = str(value).lower()
 
-        next_query = query
-        count = 0
-        previous_result = None
-        while next_query:
-            sent_query, next_query = next_query, None
-            response = self.session.request('GET', CDX_SEARCH_URL, params=sent_query)
-            try:
-                # Read/cache the response and close straightaway. If we need
-                # to raise for status, we want to pre-emptively close the
-                # response so a user handling the error doesn't need to
-                # worry about it. If we don't raise here, we still want to
-                # close the connection so it doesn't leak when we move onto
-                # the next of results or when this iterator ends.
-                read_and_close(response)
-                response.raise_for_status()
-            except requests.exceptions.HTTPError as error:
-                if 'AdministrativeAccessControlException' in response.text:
-                    raise BlockedSiteError(query['url'])
-                elif 'RobotAccessControlException' in response.text:
-                    raise BlockedByRobotsError(query['url'])
-                else:
-                    raise WaybackException(str(error))
-
-            lines = iter(response.content.splitlines())
-
-            for line in lines:
-                text = line.decode()
-
-                # The resume key is delineated by a blank line.
-                if text == '':
-                    next_query = {**query, 'resumeKey': next(lines).decode()}
-                    break
-                elif text == previous_result:
-                    # This result line is a repeat. Skip it.
-                    continue
-                else:
-                    previous_result = text
-
-                try:
-                    # The CDX server returns 7 fields:
-                    # urlkey, timestamp, original, mimetype, statuscode, digest, length
-                    urlkey, raw_timestamp, original, mimetype, raw_status, digest, raw_length, *_ = text.split(' ')
-
-                    statuscode = None if raw_status == '-' else int(raw_status)
-                    length = None if raw_length == '-' else int(raw_length)
-                    timestamp = _utils.parse_timestamp(raw_timestamp)
-                except Exception as err:
-                    if 'RobotAccessControlException' in text:
-                        raise BlockedByRobotsError(query['url'])
-                    raise UnexpectedResponseFormat(
-                        f'Could not parse CDX output: "{text}" (query: {sent_query})'
-                    ) from err
-
-                original = REDUNDANT_HTTPS_PORT.sub(r'\1\2', REDUNDANT_HTTP_PORT.sub(r'\1\2', original))
-                if skip_malformed_results and is_malformed_url(original):
-                    continue
-
-                # TODO: repeat captures have a status code of `-` and a mime type
-                # of `warc/revisit`. These can only be resolved by requesting the
-                # content and following redirects. Maybe nice to do so
-                # automatically here.
-                data = CdxRecord(
-                    urlkey=urlkey,
-                    timestamp=timestamp,
-                    original=original,
-                    mimetype=mimetype,
-                    statuscode=statuscode,
-                    digest=digest,
-                    length=length,
+        # Bind or create the persistent progress. A resumed search is always
+        # tied to the exact query it was started with.
+        if progress is not None:
+            if not isinstance(progress, SearchProgress):
+                raise TypeError('`progress` must be a wayback.SearchProgress instance.')
+            if not progress.matches_query(query):
+                raise ValueError(
+                    'Cannot resume a search with different query parameters than '
+                    f'it was started with.\nSaved query: {progress.query}\nRequested query: {query}'
                 )
-                count += 1
-                yield data
+        elif track_progress:
+            progress = SearchProgress.start(query)
 
-        return count
+        def _record_from_cdx_line(text, sent_query):
+            try:
+                # The CDX server returns 7 fields:
+                # urlkey, timestamp, original, mimetype, statuscode, digest, length
+                urlkey, raw_timestamp, original, mimetype, raw_status, digest, raw_length, *_ = text.split(' ')
+
+                statuscode = None if raw_status == '-' else int(raw_status)
+                length = None if raw_length == '-' else int(raw_length)
+                timestamp = _utils.parse_timestamp(raw_timestamp)
+            except Exception as err:
+                if 'RobotAccessControlException' in text:
+                    raise BlockedByRobotsError(query['url'])
+                raise UnexpectedResponseFormat(
+                    f'Could not parse CDX output: "{text}" (query: {sent_query})'
+                ) from err
+
+            original = REDUNDANT_HTTPS_PORT.sub(r'\1\2', REDUNDANT_HTTP_PORT.sub(r'\1\2', original))
+            if skip_malformed_results and is_malformed_url(original):
+                return None
+
+            # TODO: repeat captures have a status code of `-` and a mime type
+            # of `warc/revisit`. These can only be resolved by requesting the
+            # content and following redirects. Maybe nice to do so
+            # automatically here.
+            return CdxRecord(
+                urlkey=urlkey,
+                timestamp=timestamp,
+                original=original,
+                mimetype=mimetype,
+                statuscode=statuscode,
+                digest=digest,
+                length=length,
+            )
+
+        def _generate():
+            count = 0
+
+            if progress is None:
+                next_query = query
+                previous_result = None
+            else:
+                # Re-deliver records a consumer had not confirmed as processed,
+                # straight from local progress, before making any new request.
+                # These are never counted twice on the server-side seen total.
+                for record in progress.pending_record_objects():
+                    count += 1
+                    yield record
+
+                if progress.server_complete:
+                    return count
+
+                next_query = progress.to_query_dict()
+                # The persisted replay guard already covers every record the
+                # cursor about to be used could re-return.
+                previous_result = None
+
+            while next_query:
+                sent_query, next_query = next_query, None
+                is_resume_request = 'resumeKey' in sent_query
+                response = self.session.request('GET', CDX_SEARCH_URL, params=sent_query)
+                try:
+                    # Read/cache the response and close straightaway. If we need
+                    # to raise for status, we want to pre-emptively close the
+                    # response so a user handling the error doesn't need to
+                    # worry about it. If we don't raise here, we still want to
+                    # close the connection so it doesn't leak when we move onto
+                    # the next of results or when this iterator ends.
+                    read_and_close(response)
+                    response.raise_for_status()
+                except requests.exceptions.HTTPError as error:
+                    if 'AdministrativeAccessControlException' in response.text:
+                        raise BlockedSiteError(query['url'])
+                    elif 'RobotAccessControlException' in response.text:
+                        raise BlockedByRobotsError(query['url'])
+                    elif is_resume_request and progress is not None and 400 <= response.status_code < 500:
+                        # The request included a saved resumeKey and the server
+                        # rejected it as a client error (e.g. a 400 because the
+                        # cursor expired or the index changed). The cursor is
+                        # unusable, so surface concrete recovery options rather
+                        # than a generic error. Server-side 5xx errors are left
+                        # to the generic path since the cursor may still be valid.
+                        raise progress.raise_resume_key_error(response=response) from error
+                    else:
+                        raise WaybackException(str(error))
+
+                lines = iter(response.content.splitlines())
+                found_resume_block = False
+                # The final data line of this page, which the next page repeats.
+                page_last_line = None
+                page_last_timestamp = None
+
+                for line in lines:
+                    text = line.decode()
+
+                    # The resume key is delineated by a blank line.
+                    if text == '':
+                        found_resume_block = True
+                        resume_key = next(lines).decode()
+                        if progress is not None:
+                            # Rotate the cursor and the replay guard so it only
+                            # covers what the new cursor can re-return. The
+                            # boundary is the page's last raw data line even if
+                            # that line was itself a suppressed replay.
+                            progress.advance_cursor(
+                                resume_key,
+                                boundary_line=page_last_line,
+                                resume_timestamp=page_last_timestamp,
+                            )
+                            next_query = progress.to_query_dict()
+                        else:
+                            next_query = {**query, 'resumeKey': resume_key}
+                        break
+
+                    # Track the page boundary from every raw data line,
+                    # including ones suppressed below as replays or skipped as
+                    # malformed, since the next cursor is anchored on it.
+                    page_last_line = text
+                    page_last_timestamp = text.split(' ')[1] if ' ' in text else None
+
+                    if progress is not None:
+                        # Suppress every record the current cursor replays, not
+                        # just a single adjacent boundary line. This stays
+                        # correct even when the search was paused mid-page. The
+                        # guard keys on the exact raw wire line, which can differ
+                        # from a re-serialized record (e.g. a normalized port).
+                        if progress.is_replay(text):
+                            continue
+                        progress.add_replay_line(text)
+                    elif text == previous_result:
+                        # Legacy behavior without progress tracking.
+                        continue
+                    else:
+                        previous_result = text
+
+                    data = _record_from_cdx_line(text, sent_query)
+                    if data is None:
+                        continue
+
+                    if progress is not None:
+                        progress.note_record(data)
+                    count += 1
+                    yield data
+
+                # No resume block means the server has no further page. An empty
+                # 200 body here is the CDX server's normal end-of-results signal
+                # (not a stale cursor), so simply mark the search complete.
+                if not found_resume_block and progress is not None:
+                    progress.mark_server_complete()
+
+            return count
+
+        return SearchResults(_generate(), progress)
 
     def get_memento(
         self,

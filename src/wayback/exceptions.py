@@ -29,6 +29,38 @@ class BlockedSiteError(WaybackException):
     """
 
 
+class ResumeKeyError(WaybackException):
+    """
+    Raised when a paged search cannot be continued from the saved progress
+    because the Wayback Machine no longer recognizes its server-side
+    ``resumeKey``. Resume keys are opaque, server-managed cursors: they are not
+    guaranteed to remain valid indefinitely, and they can be invalidated when
+    the underlying index changes (e.g. new captures are added) or after some
+    time on the server.
+
+    This does not mean the search itself is broken -- it only means that exact
+    resumption from the old boundary is no longer possible. The original query
+    parameters and the progress object are preserved so you can choose how to
+    recover. See :class:`wayback.SearchProgress` for the available recovery
+    options.
+
+    Attributes
+    ----------
+    progress : wayback.SearchProgress
+        The progress that could not be resumed. Its ``query`` attribute holds
+        the exact query parameters the search was started with, and
+        ``resume_key`` holds the key the server rejected.
+    response : requests.Response, optional
+        The response from the Wayback Machine that signaled the failure, if
+        there was one.
+    """
+
+    def __init__(self, message, progress=None, response=None):
+        self.progress = progress
+        self.response = response
+        super().__init__(message)
+
+
 # TODO: split this up into a family of more specific errors? When playback
 # failed partway into a redirect chain, when a redirect goes outside
 # redirect_target_window, when a memento was circular?
