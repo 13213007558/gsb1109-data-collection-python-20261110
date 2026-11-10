@@ -15,6 +15,7 @@ import os
 import re
 
 from . import _request, _response, _rfc3986, _sockettimeout, _urllib2_fork
+from . import _recordreplay
 from ._clientcookie import Cookie
 from ._headersutil import normalize_header_name
 from ._html import Factory
@@ -161,6 +162,10 @@ class Browser(UserAgentBase):
         self.request = None
         self._set_response(None, False)
 
+        # optional record/replay integration (see mechanize._recordreplay)
+        self._recorder = None
+        self._replay_handler = None
+
         # do this last to avoid __getattr__ problems
         UserAgentBase.__init__(self)
 
@@ -178,6 +183,14 @@ class Browser(UserAgentBase):
             setattr(ans._factory, attr, getattr(self._factory, attr))
         ans.request_class = self.request_class
         ans._history = copy.copy(self._history)
+        # Re-link the cloned record/replay handler instances (the originals
+        # belong to the source browser, not the copy).
+        ans._recorder = next(
+            (handler for handler in ans.handlers
+             if isinstance(handler, _recordreplay.RecordHandler)), None)
+        ans._replay_handler = next(
+            (handler for handler in ans.handlers
+             if isinstance(handler, _recordreplay.ReplayHandler)), None)
         return ans
 
     def close(self):
@@ -202,6 +215,105 @@ class Browser(UserAgentBase):
         """Set whether to add Referer header to each request."""
         self._set_handler("_referer", handle)
         self._handle_referer = bool(handle)
+
+    def _remove_handler_instance(self, handler):
+        if handler is None:
+            return
+        try:
+            self.handlers.remove(handler)
+        except ValueError:
+            pass
+        self._handler_index_valid = False
+
+    def set_recorder(self, policy=None, session=None):
+        """Start recording every HTTP interaction performed by this browser.
+
+        A :class:`mechanize.RecordingSession` is returned (and also kept on the
+        browser).  Pass an existing ``session`` to continue recording into it,
+        otherwise a new session using :class:`mechanize.RedactionPolicy`
+        ``policy`` is created.
+        """
+        self.stop_recording()
+        self.stop_replay()
+        if session is None:
+            session = _recordreplay.RecordingSession(policy=policy)
+        handler = _recordreplay.RecordHandler(session)
+        self.add_handler(handler)
+        self._recorder = handler
+        return session
+
+    def stop_recording(self):
+        """Detach the recorder and return its :class:`RecordingSession`."""
+        handler = self._recorder
+        if handler is None:
+            return None
+        self._remove_handler_instance(handler)
+        self._recorder = None
+        return handler.session
+
+    @property
+    def recording_session(self):
+        """The active :class:`RecordingSession`, or ``None`` when not recording."""
+        if self._recorder is not None:
+            return self._recorder.session
+        return None
+
+    def save_recording(self, path):
+        """Save the current recording to ``path`` as a shareable cassette."""
+        if self._recorder is None:
+            raise BrowserStateError("browser is not recording")
+        return self._recorder.session.save(path)
+
+    def set_replay(self, source, policy=None):
+        """Switch this browser to offline replay of a cassette.
+
+        ``source`` is a cassette file path or a :class:`RecordingSession`.
+        The real HTTP and HTTPS handlers are removed, so replay can never open
+        a socket; an unmatched request raises
+        :class:`mechanize.RequestMismatchError`.
+        """
+        self.stop_replay()
+        self.stop_recording()
+        if isinstance(source, _recordreplay.RecordingSession):
+            session = source
+            if policy is not None:
+                session = session.with_policy(policy)
+        else:
+            session = _recordreplay.RecordingSession.load(source)
+            if policy is not None:
+                session = session.with_policy(policy)
+        handler = _recordreplay.ReplayHandler(session)
+        self.add_handler(handler)
+        self._replay_handler = handler
+        # remove the real transports so only the cassette can answer
+        for scheme in ("http", "https"):
+            self._replace_handler(scheme, None)
+        return handler
+
+    def stop_replay(self):
+        """Detach the replay handler, restoring normal transport handlers."""
+        handler = self._replay_handler
+        if handler is None:
+            return None
+        self._remove_handler_instance(handler)
+        self._replay_handler = None
+        # reinstall default http/https scheme handlers
+        for scheme in ("http", "https"):
+            if scheme in self.handler_classes:
+                self._set_handler(scheme, True)
+        return handler.session
+
+    @property
+    def replay(self):
+        """The active :class:`ReplayHandler`, or ``None`` when not replaying."""
+        return self._replay_handler
+
+    def assert_replay_complete(self):
+        """Fail unless every recorded interaction has been replayed."""
+        if self._replay_handler is None:
+            raise BrowserStateError("browser is not replaying")
+        self._replay_handler.session.assert_fully_played(
+            self._replay_handler.consumed)
 
     def _add_referer_header(self, request, origin_request=True):
         if self.request is None:

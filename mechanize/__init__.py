@@ -23,6 +23,9 @@ from ._equiv import HTTPEquivParser
 from ._mechanize import (Browser, BrowserStateError, FormNotFoundError,
                          History, LinkNotFoundError)
 from ._opener import ContentTooShortError, OpenerFactory, urlretrieve
+from ._recordreplay import (RecordHandler, RecordingSession, RedactionPolicy,
+                            ReplayHandler, RequestMismatchError,
+                            new_recording_browser, new_replay_browser)
 from ._response import (make_response, response_seek_wrapper,
                         seek_wrapped_response)
 from ._rfc3986 import urljoin
@@ -98,6 +101,11 @@ __all__ = [
     'MozillaCookieJar',
     'OpenerDirector',
     'OpenerFactory',
+    'RecordHandler',
+    'RecordingSession',
+    'RedactionPolicy',
+    'ReplayHandler',
+    'RequestMismatchError',
     'ProxyBasicAuthHandler',
     'ProxyDigestAuthHandler',
     'ProxyHandler',

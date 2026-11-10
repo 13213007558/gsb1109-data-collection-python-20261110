@@ -12,6 +12,7 @@ with easy HTML form filling and clicking of links.
    browser_api
    forms_api
    advanced
+   record_replay
 
 
 Quickstart
