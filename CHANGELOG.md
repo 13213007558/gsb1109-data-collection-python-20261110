@@ -1,6 +1,7 @@
 ## Changelog
 
 ## 1.x.x
+- feature: relative date mode resolving expressions like "yesterday 23:30" against a caller-supplied observation moment, site time zone and allowed range, with DST ambiguity preserved
 - fix: prefer JSON-LD dates over less reliable header fallbacks (#195)
 
 ## 1.11.0

@@ -67,6 +67,25 @@ Although the time delta between the original publication and the "last modified"
     '2016-06-23'
 
 
+Relative dates
+~~~~~~~~~~~~~~
+
+Cached or archived pages can contain relative expressions like "yesterday 23:30" whose meaning depends on when they are analyzed. The relative date mode makes the observation moment an explicit input instead of silently relying on the current time:
+
+.. code-block:: python
+
+    >>> find_date(
+    ...     htmldoc,
+    ...     relative_base="2026-11-10T08:00:00",  # observation moment
+    ...     site_timezone="Europe/Berlin",        # time zone of the website
+    ...     max_relative_days=7,                  # allowed expression range
+    ... )
+
+All three parameters are supplied by the caller: ``relative_base`` (a datetime or ISO 8601 string, naive values are read as local time in the site zone), ``site_timezone`` (an IANA name, required in this mode — the local system time zone is never used as a fallback), and ``max_relative_days`` (expressions further back are rejected, default: 7). Supported expressions include English, German and French day words ("yesterday", "gestern", "hier") with an optional clock time, as well as "ago"-style expressions ("2 hours ago", "vor 3 Tagen", "il y a une semaine").
+
+The result depends only on this context, so repeated runs on different machines and in different system time zones are consistent. Day-level expressions are resolved as calendar days in the site time zone, sub-day expressions as absolute elapsed time computed in UTC; both are logged at INFO level. Wall times rendered ambiguous or nonexistent by DST transitions are not silently resolved: the ambiguity is logged and the expression is only used if all interpretations fall on the same calendar day. Absolute dates on a page are extracted as before and take precedence.
+
+
 Settings
 --------
 

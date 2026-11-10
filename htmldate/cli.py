@@ -31,6 +31,9 @@ def cli_examine(
         verbose=args.verbose,
         min_date=args.mindate,
         max_date=args.maxdate,
+        relative_base=args.relative_base,
+        site_timezone=args.site_timezone,
+        max_relative_days=args.max_relative_days,
     )
 
 
@@ -55,6 +58,22 @@ def parse_args(args: list[str]) -> argparse.Namespace:
     )
     argsparser.add_argument(
         "-max", "--maxdate", help="latest acceptable date (ISO 8601 YMD)", type=str
+    )
+    argsparser.add_argument(
+        "--relative-base",
+        help="observation moment for relative dates like 'yesterday 23:30' (ISO 8601)",
+        type=str,
+    )
+    argsparser.add_argument(
+        "--site-timezone",
+        help="IANA time zone of the website, required with --relative-base",
+        type=str,
+    )
+    argsparser.add_argument(
+        "--max-relative-days",
+        help="maximum age of relative date expressions in days (default: 7)",
+        type=int,
+        default=7,
     )
     argsparser.add_argument("-u", "--URL", help="custom URL download", type=str)
     argsparser.add_argument(

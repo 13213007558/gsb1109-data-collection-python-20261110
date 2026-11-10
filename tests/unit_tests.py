@@ -53,6 +53,11 @@ from htmldate.extractors import (
     _fold_month_name,
 )
 from htmldate.meta import reset_caches
+from htmldate.relative import (
+    build_relative_context,
+    relative_search,
+    resolve_relative,
+)
 from htmldate.settings import MIN_DATE
 from htmldate.utils import (
     Extractor,
@@ -2365,3 +2370,220 @@ def test_deferred():
     </head><body></body></html>"""
     assert find_date(htmlstring, deferred_url_extractor=True) == "2017-09-01"
     assert find_date(htmlstring, deferred_url_extractor=False) == "2017-08-30"
+
+
+def test_relative_context():
+    "Relative mode context: explicit inputs only, no system defaults."
+    # naive base is read as local time in the site zone
+    context = build_relative_context("2026-11-10T08:00:00", "Europe/Berlin")
+    assert context.base.utcoffset() == datetime.timedelta(hours=1)
+    # aware base is converted to the site zone
+    context = build_relative_context("2026-11-10T00:30:00+00:00", "Europe/Berlin")
+    assert context.base.hour == 1 and context.base.minute == 30
+    # tzinfo objects are accepted as well
+    context = build_relative_context(
+        datetime.datetime(2026, 11, 10, 8), datetime.timezone.utc
+    )
+    assert context.base.tzinfo is datetime.timezone.utc
+    # invalid inputs are rejected, nothing falls back to the local zone
+    with pytest.raises(ValueError):
+        build_relative_context("2026-11-10T08:00:00", "Europe/Berlin", max_days=-1)
+    with pytest.raises(KeyError):
+        build_relative_context("2026-11-10T08:00:00", "Nowhere/Special")
+    with pytest.raises(TypeError):
+        build_relative_context("2026-11-10T08:00:00", 3600)
+    with pytest.raises(TypeError):
+        build_relative_context(1762765200, "Europe/Berlin")
+    # find_date requires an explicit time zone in relative mode
+    with pytest.raises(ValueError):
+        find_date(
+            "<html><body><p>yesterday</p></body></html>",
+            relative_base="2026-11-10T08:00:00",
+        )
+
+
+def test_relative_resolution():
+    "Resolution of relative expressions against the caller's context."
+    context = build_relative_context("2026-11-10T08:00:00", "Europe/Berlin")
+    # calendar-day expressions: day shift in the site time zone
+    assert resolve_relative("today", context).date() == datetime.date(2026, 11, 10)
+    assert resolve_relative("Yesterday 23:30", context).date() == datetime.date(
+        2026, 11, 9
+    )
+    assert resolve_relative("gestern, 23:30 Uhr", context).date() == datetime.date(
+        2026, 11, 9
+    )
+    assert resolve_relative("vorgestern", context).date() == datetime.date(2026, 11, 8)
+    assert resolve_relative("aujourd’hui", context).date() == datetime.date(
+        2026, 11, 10
+    )
+    assert resolve_relative("hier à 23h30", context).date() == datetime.date(
+        2026, 11, 9
+    )
+    assert resolve_relative("avant-hier", context).date() == datetime.date(2026, 11, 8)
+    # elapsed-time expressions: absolute arithmetic, converted back to the zone
+    early = build_relative_context("2026-11-10T00:30:00", "Europe/Berlin")
+    assert resolve_relative("2 hours ago", early).date() == datetime.date(2026, 11, 9)
+    assert resolve_relative("vor 3 Tagen", context).date() == datetime.date(2026, 11, 7)
+    assert resolve_relative("il y a une semaine", context).date() == datetime.date(
+        2026, 11, 3
+    )
+    # unsupported or out-of-scope text
+    assert resolve_relative("no date here", context) is None
+    assert resolve_relative("yesterday 25:30", context) is None
+    # allowed expression range: beyond max_days the match is rejected
+    assert resolve_relative("10 days ago", context) is None
+    wide = build_relative_context("2026-11-10T08:00:00", "Europe/Berlin", max_days=14)
+    assert resolve_relative("10 days ago", wide).date() == datetime.date(2026, 10, 31)
+    # the same instant yields different calendar days in different site zones
+    base = "2026-11-10T00:30:00+00:00"
+    berlin = build_relative_context(base, "Europe/Berlin")
+    new_york = build_relative_context(base, "America/New_York")
+    assert resolve_relative("today", berlin).date() == datetime.date(2026, 11, 10)
+    assert resolve_relative("today", new_york).date() == datetime.date(2026, 11, 9)
+
+
+def test_relative_dst():
+    "DST gaps and folds keep their ambiguity instead of being silently resolved."
+    # gap: 2026-03-29 02:30 does not exist in Europe/Berlin
+    context = build_relative_context("2026-03-30T12:00:00", "Europe/Berlin")
+    assert resolve_relative("yesterday 02:30", context) is None
+    # fold: 2026-10-25 02:30 exists twice, both times on the same calendar day
+    context = build_relative_context("2026-10-26T12:00:00", "Europe/Berlin")
+    resolved = resolve_relative("yesterday 02:30", context)
+    assert resolved is not None and resolved.date() == datetime.date(2026, 10, 25)
+    # Pacific/Apia skipped 2011-12-30 entirely: no wall time existed that day
+    context = build_relative_context("2011-12-31T12:00:00", "Pacific/Apia")
+    assert resolve_relative("yesterday", context) is None
+
+
+def test_relative_find_date():
+    "End-to-end relative mode through find_date()."
+    htmlstring = (
+        "<html><body><span class='date'>yesterday at 23:30</span></body></html>"
+    )
+    assert (
+        find_date(
+            htmlstring,
+            relative_base="2026-11-10T08:00:00",
+            site_timezone="Europe/Berlin",
+        )
+        == "2026-11-09"
+    )
+    # fast mode and time-carrying output formats work as well
+    assert (
+        find_date(
+            htmlstring,
+            extensive_search=False,
+            outputformat="%Y-%m-%dT%H:%M:%S%z",
+            relative_base="2026-11-10T08:00:00",
+            site_timezone="Europe/Berlin",
+        )
+        == "2026-11-09T23:30:00+0100"
+    )
+    # cross-day: two hours before 00:30 is the previous calendar day
+    assert (
+        find_date(
+            "<html><body><p>2 hours ago</p></body></html>",
+            relative_base="2026-11-10T00:30:00",
+            site_timezone="Europe/Berlin",
+        )
+        == "2026-11-09"
+    )
+    # absolute dates are extracted as before and take precedence
+    absolute = "<html><body><span class='date'>2020-05-12</span></body></html>"
+    assert find_date(absolute) == "2020-05-12"
+    assert (
+        find_date(
+            absolute,
+            relative_base="2026-11-10T08:00:00",
+            site_timezone="Europe/Berlin",
+        )
+        == "2020-05-12"
+    )
+    # a time zone without a base has no effect
+    assert find_date(absolute, site_timezone="Europe/Berlin") == "2020-05-12"
+    # out-of-range expressions yield no date
+    assert (
+        find_date(
+            "<html><body><p>10 days ago</p></body></html>",
+            relative_base="2026-11-10T08:00:00",
+            site_timezone="Europe/Berlin",
+        )
+        is None
+    )
+    # direct use of the search helper
+    options = Extractor(
+        True,
+        LATEST_POSSIBLE,
+        MIN_DATE,
+        False,
+        OUTPUTFORMAT,
+        build_relative_context("2026-11-10T08:00:00", "Europe/Berlin"),
+    )
+    tree = load_html("<html><body><p>gestern</p></body></html>")
+    assert relative_search(tree, options) == "2026-11-09"
+    assert relative_search(tree, OPTIONS) is None
+
+
+def test_relative_determinism():
+    "The result depends only on the passed context, not on the system zone."
+    htmlstring = (
+        "<html><body><span class='date'>yesterday at 23:30</span></body></html>"
+    )
+    results = set()
+    old_tz = os.environ.get("TZ")
+    try:
+        for zone in ("UTC", "America/New_York", "Asia/Tokyo"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            results.add(
+                find_date(
+                    htmlstring,
+                    relative_base="2026-11-10T08:00:00",
+                    site_timezone="Europe/Berlin",
+                )
+            )
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
+    assert results == {"2026-11-09"}
+
+
+def test_relative_logging(caplog):
+    "The cross-day calculation basis is traceable in the logs."
+    with caplog.at_level(logging.INFO, logger="htmldate.relative"):
+        find_date(
+            "<html><body><p>gestern, 23:30 Uhr</p></body></html>",
+            relative_base="2026-11-10T08:00:00",
+            site_timezone="Europe/Berlin",
+        )
+    assert "Europe/Berlin" in caplog.text
+    assert "2026-11-09" in caplog.text and "1 day(s) back" in caplog.text
+
+
+def test_relative_cli():
+    "Command-line arguments for the relative date mode."
+    args = parse_args(
+        [
+            "--relative-base",
+            "2026-11-10T08:00:00",
+            "--site-timezone",
+            "Europe/Berlin",
+            "--max-relative-days",
+            "3",
+        ]
+    )
+    assert args.relative_base == "2026-11-10T08:00:00"
+    assert args.site_timezone == "Europe/Berlin"
+    assert args.max_relative_days == 3
+    assert (
+        cli_examine(
+            "<html><body><p>gestern</p></body></html>",
+            args,
+        )
+        == "2026-11-09"
+    )

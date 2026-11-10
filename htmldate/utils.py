@@ -8,8 +8,12 @@ import re
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import urllib3
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .relative import RelativeContext
 
 # CChardet is faster and can be more accurate
 try:
@@ -52,6 +56,7 @@ class Extractor:
     min: datetime
     original: bool
     format: str
+    relative: "RelativeContext | None" = None
 
 
 def is_wrong_document(data: str | bytes | HtmlElement | None) -> bool:

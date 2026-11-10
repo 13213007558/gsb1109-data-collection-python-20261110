@@ -34,6 +34,7 @@ from .extractors import (
     YEAR_RE,
     TIME_TZ_RE,
 )
+from .relative import build_relative_context, relative_search
 from .settings import (
     CLEANING_LIST,
     MAX_POSSIBLE_CANDIDATES,
@@ -819,6 +820,9 @@ def find_date(
     min_date: datetime | str | None = None,
     max_date: datetime | str | None = None,
     deferred_url_extractor: bool = False,
+    relative_base: datetime | str | None = None,
+    site_timezone: str | None = None,
+    max_relative_days: int = 7,
 ) -> str | None:
     """
     Extract dates from HTML documents using markup analysis and text patterns
@@ -855,12 +859,42 @@ def find_date(
         Use url extractor as backup only to prioritize full expressions,
         e.g. of the type `%Y-%m-%d %H:%M:%S`
     :type deferred_url_extractor: boolean
+    :param relative_base:
+        Observation moment used to resolve relative date expressions
+        (e.g. "yesterday 23:30"), as datetime or ISO 8601 string. A naive
+        value is read as local time in the site time zone, an aware value
+        is converted to it. Enables the relative date mode.
+    :type relative_base: datetime, string
+    :param site_timezone:
+        IANA time zone of the website (e.g. "Europe/Berlin"), required when
+        relative_base is set. The local system time zone is never used as
+        a fallback.
+    :type site_timezone: string
+    :param max_relative_days:
+        Maximum accepted distance in days between the observation moment
+        and a resolved relative expression
+    :type max_relative_days: int
     :return: Returns a valid date expression as a string, or None
     """
 
     # init
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
+
+    # relative date mode: fully determined by caller-supplied context
+    relative_context = None
+    if relative_base is not None:
+        if site_timezone is None:
+            raise ValueError(
+                "relative date mode requires an explicit site_timezone "
+                "(IANA name, e.g. 'Europe/Berlin'): the local system time "
+                "zone is never used as a fallback"
+            )
+        relative_context = build_relative_context(
+            relative_base, site_timezone, max_relative_days
+        )
+    elif site_timezone is not None:
+        LOGGER.warning("site_timezone has no effect without relative_base")
 
     tree = load_html(htmlobject)
 
@@ -877,6 +911,7 @@ def find_date(
         get_min_date(min_date),
         original_date,
         outputformat,
+        relative_context,
     )
 
     # URL
@@ -931,6 +966,7 @@ def find_date(
         examine_elements(date_candidates(search_tree, extensive_search), options)
         or examine_elements(search_tree.xpath(".//title|.//h1"), options)
         or examine_time_elements(search_tree, options)
+        or relative_search(search_tree, options)
     )
     if result is not None:
         return result
