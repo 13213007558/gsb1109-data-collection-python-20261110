@@ -3,7 +3,6 @@ import logging
 import re
 import sys
 import urllib.request
-import urllib.parse
 import urllib.error
 
 from lxml.etree import tostring
@@ -21,6 +20,7 @@ from .htmls import get_title
 from .htmls import get_author
 from .htmls import shorten_title
 from .debug import describe, text_content
+from .media import is_video_url, iter_media_groups
 
 
 log = logging.getLogger("readability.readability")
@@ -87,19 +87,6 @@ def clean(text):
     text = re.sub(r"\s*\n\s*", "\n", text)
     text = re.sub(r"\t|[ \t]{2,}", " ", text)
     return text.strip()
-
-
-def is_video_url(url):
-    try:
-        parsed = urllib.parse.urlsplit(url)
-    except ValueError:
-        return False
-    return parsed.scheme in ("http", "https") and parsed.hostname in {
-        "youtube.com",
-        "www.youtube.com",
-        "vimeo.com",
-        "www.vimeo.com",
-    }
 
 
 def text_length(i):
@@ -254,66 +241,100 @@ class Document:
         so it is better to call other API methods before this one.
         """
         try:
-            ruthless = True
-            while True:
-                self._html(True)
-                for i in self.tags(self.html, "script", "style", "noscript"):
-                    i.drop_tree()
-                for i in self.tags(self.html, "body"):
-                    i.set("id", "readabilityBody")
-                if ruthless:
-                    self.remove_unlikely_candidates()
-                self.transform_misused_divs_into_paragraphs()
-                candidates = self.score_paragraphs()
-
-                best_candidate = self.select_best_candidate(candidates)
-                if best_candidate:
-                    best_candidate = self.get_semantic_article_candidate(
-                        candidates, best_candidate
-                    )
-                    best_candidate = self.get_semantic_main_candidate(
-                        candidates, best_candidate
-                    )
-
-                if best_candidate:
-                    article = self.get_article(
-                        candidates, best_candidate, html_partial=html_partial
-                    )
-                else:
-                    if ruthless:
-                        log.info("ruthless removal did not work. ")
-                        ruthless = False
-                        log.debug(
-                            "ended up stripping too much - "
-                            "going for a safer _parse"
-                        )
-                        # try again
-                        continue
-                    else:
-                        log.debug(
-                            "Ruthless and lenient parsing did not work. "
-                            "Returning raw html"
-                        )
-                        article = self.html.find("body")
-                        if article is None:
-                            article = self.html
-                cleaned_article = self.sanitize(article, candidates, keep_all_images)
-
-                article_for_length = cleaned_article or ""
-                if self.xpath:
-                    article_for_length = re.sub(r' x="[^"]*"', "", article_for_length)
-                article_length = len(article_for_length)
-                retry_length = self.retry_length
-                of_acceptable_length = article_length >= retry_length
-                if ruthless and not of_acceptable_length:
-                    ruthless = False
-                    # Loop through and try again.
-                    continue
-                else:
-                    return cleaned_article
+            self._extract_article(
+                html_partial=html_partial, keep_all_images=keep_all_images
+            )
+            return self.get_clean_html()
         except Exception as e:
             log.exception("error getting summary: ")
             raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
+
+    def media_groups(self, html_partial=False, keep_all_images=True):
+        """
+        Given a HTML file, extracts the article and returns its media groups.
+
+        Each group associates one media occurrence (image, video or audio)
+        with its resource candidates, caption, alternative text and position
+        in the article body, so gallery articles can be browsed group by
+        group.  Lazy-loading attributes and <picture> candidates are
+        preserved with their origin attribute; nothing is downloaded and no
+        candidate is resolved the way a browser would.  Groups without any
+        resource URL carry a "missing_reason" instead of disappearing.
+
+        :param html_partial: extract only the div of the document, don't wrap
+                             in html and body tags.
+        :param keep_all_images: Keep all images in the extracted article.
+
+        Warning: It mutates internal DOM representation of the HTML document,
+        so it is better to call other API methods before this one.
+        """
+        try:
+            article = self._extract_article(
+                html_partial=html_partial, keep_all_images=keep_all_images
+            )
+            return list(iter_media_groups(article))
+        except Exception as e:
+            log.exception("error getting media groups: ")
+            raise Unparseable(str(e)).with_traceback(sys.exc_info()[2])
+
+    def _extract_article(self, html_partial=False, keep_all_images=False):
+        ruthless = True
+        while True:
+            self._html(True)
+            for i in self.tags(self.html, "script", "style", "noscript"):
+                i.drop_tree()
+            for i in self.tags(self.html, "body"):
+                i.set("id", "readabilityBody")
+            if ruthless:
+                self.remove_unlikely_candidates()
+            self.transform_misused_divs_into_paragraphs()
+            candidates = self.score_paragraphs()
+
+            best_candidate = self.select_best_candidate(candidates)
+            if best_candidate:
+                best_candidate = self.get_semantic_article_candidate(
+                    candidates, best_candidate
+                )
+                best_candidate = self.get_semantic_main_candidate(
+                    candidates, best_candidate
+                )
+
+            if best_candidate:
+                article = self.get_article(
+                    candidates, best_candidate, html_partial=html_partial
+                )
+            else:
+                if ruthless:
+                    log.info("ruthless removal did not work. ")
+                    ruthless = False
+                    log.debug(
+                        "ended up stripping too much - "
+                        "going for a safer _parse"
+                    )
+                    # try again
+                    continue
+                else:
+                    log.debug(
+                        "Ruthless and lenient parsing did not work. "
+                        "Returning raw html"
+                    )
+                    article = self.html.find("body")
+                    if article is None:
+                        article = self.html
+            cleaned_article = self.sanitize(article, candidates, keep_all_images)
+
+            article_for_length = cleaned_article or ""
+            if self.xpath:
+                article_for_length = re.sub(r' x="[^"]*"', "", article_for_length)
+            article_length = len(article_for_length)
+            retry_length = self.retry_length
+            of_acceptable_length = article_length >= retry_length
+            if ruthless and not of_acceptable_length:
+                ruthless = False
+                # Loop through and try again.
+                continue
+            else:
+                return self.html
 
     def get_article(self, candidates, best_candidate, html_partial=False):
         # Now that we have the top candidate, look through its siblings for
@@ -1109,6 +1130,13 @@ def main():
     )
     parser.add_option("-x", "--xpath", default=None, help="add original xpath")
     parser.add_option(
+        "-m",
+        "--media-groups",
+        default=False,
+        action="store_true",
+        help="print article media groups as JSON instead of the summary",
+    )
+    parser.add_option(
         "-p",
         "--positive-keywords",
         default=None,
@@ -1154,6 +1182,10 @@ def main():
 
             result = "<h2>" + doc.short_title() + "</h2><br/>" + doc.summary()
             open_in_browser(result)
+        elif options.media_groups:
+            import json
+
+            print(json.dumps(doc.media_groups(), ensure_ascii=False, indent=2))
         else:
             result = "Title:" + doc.short_title() + "\n" + doc.summary()
             print(result)

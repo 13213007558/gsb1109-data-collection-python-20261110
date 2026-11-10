@@ -49,6 +49,37 @@ The command-line interface accepts a local HTML file or a URL:
 python -m readability -u https://example.com
 ```
 
+## Media groups
+
+`Document.media_groups()` extracts the article and returns its media as an
+ordered list of groups, so gallery articles can be browsed group by group.
+Each group ties one media occurrence (image, video or audio) to its resource
+candidates, caption, alternative text and position in the article body:
+
+```python
+>>> doc = Document(response.content)
+>>> for group in doc.media_groups():
+...     print(group["position"], group["type"], group["caption"])
+...     for source in group["sources"]:
+...         print("   ", source["origin"], source["url"])
+```
+
+- Lazy-loading attributes (`data-src`, `data-srcset`, ...) and `<picture>`
+  candidates are all preserved, each tagged with the attribute it came from
+  (`origin`). Nothing is downloaded, and candidates that only a browser can
+  pick (srcset descriptors, `media` queries) are reported, not resolved.
+- Navigation icons, tracking pixels and other decorative images are excluded.
+- The same media used in two places yields two groups, each with its own
+  caption.
+- Groups without any resource URL stay in the list and explain why in
+  `missing_reason` instead of silently disappearing.
+
+The same output is available on the command line as JSON:
+
+```bash
+python -m readability -m article.html
+```
+
 Run the real-page extraction benchmark with the default minimum F1 of 0.95:
 
 ```bash
