@@ -472,6 +472,68 @@ mappingproxy({'serializer': <class 'int'>, 'limit': 100})
 
 ---
 
+## CSV import and export
+
+The `itemadapter.tabular` module exports batches of items to CSV files that
+can be reviewed and edited manually (e.g. with spreadsheet software), and
+imports them back into items:
+
+```python
+from dataclasses import dataclass, field
+
+from itemadapter.tabular import export_csv, import_csv
+
+
+@dataclass
+class Address:
+    street: str
+    city: str
+
+
+@dataclass
+class CrawlRecord:
+    url: str
+    address: Address
+    tags: list[str] = field(default_factory=list)
+
+
+records = [CrawlRecord("https://example.com", Address("Main St. 1", "Berlin"), ["de"])]
+export_csv(records, "records.csv")  # also writes records.schema.json
+assert import_csv("records.csv") == records
+```
+
+`export_csv()` writes a companion schema file (`<name>.schema.json`) next to
+the CSV file, recording the columns, the item class and its JSON Schema.
+`import_csv()` uses it to validate every row before building items.
+
+Values are represented in cells as follows:
+
+* missing field: empty cell
+* `None`: `null`
+* `True` / `False`: `true` / `false`
+* numbers: their JSON representation (e.g. `42`, `9.5`)
+* nested items, dictionaries and lists: their JSON representation (e.g.
+  `{"city": "Berlin"}`, `["a", "b"]`)
+* strings: written verbatim, unless they are empty or could be misread as
+  one of the representations above (e.g. the string `"null"` or `"42"`),
+  in which case they are written as a JSON string
+
+Because nested data is kept as JSON inside a single cell instead of being
+flattened into key paths, field names that contain commas, dots or other
+delimiters never clash with the encoding.
+
+On import, every cell is decoded and validated against the item type. If
+anything is wrong, `TabularImportError` is raised with the row and column of
+every offending cell, and no item is created at all, so a batch is never
+partially imported.
+
+Spreadsheet software may interpret cells starting with `=`, `+`, `-` or `@`
+as formulas. Exporting with `safe=True` writes such strings as JSON strings
+(i.e. wrapped in double quotes) so they display as text; importing remains
+lossless regardless of the mode used to export.
+
+---
+
 ## Extending `itemadapter`
 
 This package allows to handle arbitrary item classes, by implementing an adapter interface:

@@ -1,5 +1,14 @@
 # Changelog
 
+### 0.15.0 (unreleased)
+
+Added the `itemadapter.tabular` module, with `export_csv()` and
+`import_csv()` functions to export batches of items to CSV files (with a
+companion JSON schema file) for manual review and editing, and to import
+them back with per-cell validation against the item type, row and column
+positions in error reports, all-or-nothing batch semantics, and an optional
+spreadsheet-safe display mode.
+
 ### 0.14.0 (2026-10-29)
 
 Removed support for Python 3.9 and 3.10, and added support for Python 3.15
