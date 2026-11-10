@@ -720,6 +720,33 @@ class AutoScraper(object):
         for rule_id, alias in rule_aliases.items():
             id_to_stack[rule_id]["alias"] = alias
 
+    def health_check(self, thresholds=None):
+        """
+        Creates an optional, read-only rule health check bound to this scraper.
+
+        The returned :class:`autoscraper.health.RuleHealthCheck` records what
+        the learned rules look like on known-good training pages and later
+        reports rules whose match counts, tag structure or result shape drift.
+        It never retrains or modifies the learned rules, and every threshold
+        must be supplied explicitly by the caller.
+
+        Parameters
+        ----------
+        thresholds : dict, optional
+            Threshold mapping documented on
+            ``autoscraper.health.RuleHealthCheck``. Dimensions without a
+            threshold are not evaluated, so passing no thresholds yields a
+            check that only records baselines.
+
+        Returns
+        --------
+        autoscraper.health.RuleHealthCheck
+        """
+
+        from autoscraper.health import RuleHealthCheck
+
+        return RuleHealthCheck(self, thresholds=thresholds)
+
     def generate_python_code(self):
         # deprecated
         print("This function is deprecated. Please use save() and load() instead.")

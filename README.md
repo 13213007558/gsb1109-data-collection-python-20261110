@@ -133,8 +133,73 @@ And to load:
 scraper.load('yahoo-finance')
 ```
 
+### Rule health checks
+
+A learned rule matches page *structure*, so it can silently start returning the
+wrong thing while still returning *something* — for example a product-title
+rule that has slid onto a promotional banner. The optional health check
+records what each rule looked like on known-good training pages and flags
+rules worth a manual review at runtime. It never retrains, adds or removes
+rules, and every threshold is opt-in: a dimension without a threshold is
+simply not evaluated.
+
+```python
+scraper.build(html=training_html, wanted_dict={
+    'title': ['Sony PlayStation 4 Pro Console - Black'],
+    'price': ['US $349.99'],
+})
+
+check = scraper.health_check({
+    'min_match_count': 1,          # fewer matches than this -> missing
+    'max_match_count': 1,          # more matches than this  -> expansion
+    'min_coverage': 0.8,           # share of rules that must still match
+    'max_unknown_fraction': 0.5,   # mostly unmatched rules -> unknown page
+    'max_depth_change': 0,         # moved tag paths       -> structure change
+    'max_tag_jaccard_distance': 0.2,
+    'max_digit_fraction_change': 0.1,  # title turning into price/promo copy
+    'max_length_ratio_change': 0.5,
+})
+
+# record the explainable structure, match counts and result shape of the
+# rules on several known-good training pages (different products, same layout)
+check.record_baseline([
+    {'html': training_html_1},
+    {'html': training_html_2},
+])
+
+report = check.check(html=runtime_html)
+report['healthy']      # bool
+report['flags']        # list of {rule_id, alias, kind, evidence}
+report['observations'] # per-rule counts, paths and sample values
+```
+
+What the check distinguishes:
+
+- **Content change is healthy.** A page showing a different product with the
+  same markup reports no flags; text alone never counts as failure.
+- **Expansion (`expansion`).** A rule that used to match one product title and
+  now also matches promo elements, with the new values included as evidence.
+- **Result shape change (`result_shape_change`).** Values still arrive but
+  their shape moved (e.g. a letter-heavy title becomes digit-heavy promo copy).
+- **Structure change (`structure_change`).** A rule no longer resolves but its
+  leaf tag still exists elsewhere, with the surviving candidate paths attached
+  as evidence for a human reviewer.
+- **Unknown page (`unknown_page` / `low_coverage`).** Most or all rules match
+  nothing and the leaf tags are gone. An unknown page is reported as a
+  problem, never treated as a success.
+
+The baseline can be persisted alongside the model:
+
+```python
+import json
+with open('health-baseline.json', 'w') as f:
+    json.dump(check.to_dict(), f)
+
+check = RuleHealthCheck.from_dict(scraper, json.load(open('health-baseline.json')))
+```
+
 ## Tutorials
- 
+
 - See [this gist](https://gist.github.com/alirezamika/72083221891eecd991bbc0a2a2467673) for more advanced usages.
 - [AutoScraper and Flask: Create an API From Any Website in Less Than 5 Minutes](https://medium.com/better-programming/autoscraper-and-flask-create-an-api-from-any-website-in-less-than-5-minutes-3f0f176fc4a3)
 
