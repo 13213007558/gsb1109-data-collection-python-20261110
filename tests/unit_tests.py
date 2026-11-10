@@ -1,0 +1,2367 @@
+"""
+Unit tests for the htmldate library.
+"""
+
+import datetime
+import importlib
+import io
+import logging
+import os
+import re
+import subprocess
+import sys
+import time
+
+from collections import Counter
+from contextlib import redirect_stdout
+from functools import partial
+from unittest.mock import Mock, patch
+
+import pytest
+
+from lxml import etree, html
+
+from htmldate.cli import cli_examine, main, parse_args, process_args
+from htmldate.core import (
+    compare_reference,
+    date_candidates,
+    examine_elements,
+    examine_header,
+    examine_text,
+    find_date,
+    search_normalized,
+    search_page,
+    search_pattern,
+    select_candidate,
+    normalize_match,
+    SELECT_YMD_PATTERN,
+    SELECT_YMD_YEAR,
+    THREE_COMP_REGEX_A,
+)
+from htmldate.extractors import (
+    custom_parse,
+    discard_unwanted,
+    external_date_parser,
+    get_external_parser,
+    idiosyncrasies_search,
+    regex_parse,
+    try_date_expr,
+    FAST_PREPEND,
+    MONTHS,
+    MONTH_KEYS,
+    MONTH_NUMBERS,
+    _fold_month_name,
+)
+from htmldate.meta import reset_caches
+from htmldate.settings import MIN_DATE
+from htmldate.utils import (
+    Extractor,
+    decode_file,
+    detect_encoding,
+    fetch_url,
+    is_dubious_html,
+    load_html,
+    repair_faulty_html,
+)
+import htmldate.utils
+from htmldate.validators import (
+    compare_values,
+    convert_date,
+    get_max_date,
+    get_min_date,
+    is_valid_date,
+    is_valid_format,
+    update_reference,
+)
+
+
+TEST_DIR = os.path.abspath(os.path.dirname(__file__))
+OUTPUTFORMAT = "%Y-%m-%d"
+
+LATEST_POSSIBLE = datetime.datetime.now()
+
+OPTIONS = Extractor(True, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+
+
+def test_input():
+    """test if loaded strings/trees are handled properly"""
+    assert is_dubious_html("This is a string.") is True
+
+    htmlstring = "<!DOCTYPE html PUBLIC />\n<html></html>"
+    beginning = htmlstring[:50].lower()
+    assert repair_faulty_html(htmlstring, beginning) == "\n<html></html>"
+
+    htmlstring = "<html>\n</html>"
+    beginning = htmlstring[:50].lower()
+    assert repair_faulty_html(htmlstring, beginning) == htmlstring
+
+    htmlstring = "<html/>\n</html>"
+    beginning = htmlstring[:50].lower()
+    assert repair_faulty_html(htmlstring, beginning) == "<html>\n</html>"
+
+    htmlstring = '<!DOCTYPE html>\n<html lang="en-US"/>\n<head/>\n<body/>\n</html>'
+    beginning = htmlstring[:50].lower()
+    assert (
+        repair_faulty_html(htmlstring, beginning)
+        == '<!DOCTYPE html>\n<html lang="en-US">\n<head/>\n<body/>\n</html>'
+    )
+
+    with pytest.raises(TypeError) as err:
+        assert load_html(123) is None
+    assert "incompatible" in str(err.value)
+    assert load_html("<" * 100) is None
+    assert load_html("<xml><body>ABC</body></xml>") is None
+    assert load_html("<html><body>XYZ</body></html>") is not None
+    assert load_html(b"<html><body>XYZ</body></html>") is not None
+    assert load_html(b"<" * 100) is None
+    assert load_html(b"<html><body>\x2f\x2e\x9f</body></html>") is not None
+    assert (
+        load_html("<html><body>\x2f\x2e\x9f</body></html>".encode("latin-1"))
+        is not None
+    )
+    assert load_html("https://httpbun.com/html") is not None
+    # an already-parsed tree is returned as-is
+    assert load_html(html.fromstring("<html><body>x</body></html>")) is not None
+    # encoding declaration
+    assert (
+        load_html(
+            '<?xml version="1.0" encoding="utf-8"?><!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/></head><body><p>A</p><p>B</p></body></html>'
+        )
+        is not None
+    )
+    # find_date logic
+    with pytest.raises(TypeError):
+        assert find_date(None) is None
+    assert find_date("<" * 100) is None
+    assert find_date("<html></html>", verbose=True) is None
+    assert find_date("<html><body>\u0008this\xdf\n\u001f+\uffff</body></html>") is None
+
+    # out-of-range "data-utime" timestamps must not crash (return None instead)
+    for utime in ("999999999999999", "99999999999999999999", "-99999999999999"):
+        assert (
+            find_date(
+                f'<html><body><abbr class="published" data-utime="{utime}">x</abbr>'
+                "<p>filler text</p></body></html>"
+            )
+            is None
+        )
+    # a valid Unix timestamp still resolves
+    assert (
+        find_date(
+            '<html><body><abbr class="published" data-utime="1609459200">x</abbr>'
+            "</body></html>"
+        )
+        == "2021-01-01"
+    )
+    # a parseable timestamp whose date falls outside the allowed range returns None
+    assert (
+        find_date(
+            '<html><body><abbr class="published" data-utime="86400">x</abbr>'
+            "<p>filler text</p></body></html>"
+        )
+        is None
+    )
+    # data-utime resolved in original-date mode
+    assert (
+        find_date(
+            '<html><body><abbr data-utime="1438091078">x</abbr></body></html>',
+            original_date=True,
+        )
+        == "2015-07-28"
+    )
+    # abbr with a recognized class and a title attribute
+    assert (
+        find_date(
+            '<html><body><abbr class="published" title="2020-05-05">x</abbr></body></html>'
+        )
+        == "2020-05-05"
+    )
+
+    # min and max date output
+    assert get_min_date("2020-02-20").date() == datetime.date(2020, 2, 20)
+    assert get_min_date(None).date() == datetime.date(1995, 1, 1)
+    assert get_min_date("3030-30-50").date() == datetime.date(1995, 1, 1)
+    assert get_min_date(datetime.datetime(1990, 1, 1)) == datetime.datetime(1990, 1, 1)
+    assert get_min_date("2020-02-20T13:30:00") == datetime.datetime(2020, 2, 20, 13, 30)
+
+    assert get_max_date("2020-02-20").date() == datetime.date(2020, 2, 20)
+    assert get_max_date(None).date() == datetime.date.today()
+    assert get_max_date("3030-30-50").date() == datetime.date.today()
+    assert get_max_date(datetime.datetime(3000, 1, 1)) == datetime.datetime(3000, 1, 1)
+    assert get_max_date("2020-02-20T13:30:00") == datetime.datetime(2020, 2, 20, 13, 30)
+
+
+def test_examine_text():
+    """test early-exit guards in examine_text"""
+    assert examine_text("  ab  ", OPTIONS) is None
+    assert examine_text("a   b   c", OPTIONS) is None
+
+
+def test_sanity():
+    """Test if function arguments are interpreted and processed correctly."""
+    mytree = html.fromstring("<html><body><p>Test.</p></body></html>")
+    result = examine_elements(mytree.xpath(".//p"), OPTIONS)
+    assert result is None
+    mytree = html.fromstring("<html><body><p>1999/03/05</p></body></html>")
+    result = examine_elements(mytree.xpath(".//p"), OPTIONS)
+    assert result is not None
+    # wrong field values in output format
+    assert is_valid_format("%Y-%m-%d") is True
+    assert is_valid_format("%M-%Y") is True
+    assert is_valid_format("ABC") is False
+    assert is_valid_format(123) is False
+    assert is_valid_format(("a", "b")) is False
+    tree = discard_unwanted(
+        html.fromstring(
+            '<html><body><div id="wm-ipp">000</div><div>AAA</div></body></html>'
+        )
+    )
+    assert tree.find('.//div[@id="wm-ipp"]') is None  # archive.org banner removed
+    assert "AAA" in tree.text_content()  # real content kept
+    # reset caches
+    old_values = try_date_expr.cache_info()
+    reset_caches()
+    assert try_date_expr.cache_info() != old_values
+
+
+def test_no_date():
+    """These pages should not return any date"""
+    assert find_date("<html><body>XYZ</body></html>", outputformat="123") is None
+    assert (
+        find_date(
+            "<html><body>XYZ</body></html>", url="http://www.website.com/9999/01/43/"
+        )
+        is None
+    )
+    assert find_date("<html><body><time></time></body></html>") is None
+    assert (
+        find_date(
+            '<html><body><abbr class="published"></abbr></body></html>',
+        )
+        is None
+    )
+
+
+# reference for date_candidates
+DATE_XPATH = """
+[
+    contains(translate(@id|@class|@itemprop, "D", "d"), 'date') or
+    contains(translate(@id|@class|@itemprop, "D", "d"), 'datum') or
+    contains(translate(@itemprop, "D", "d"), 'date') or
+    contains(translate(@itemprop, "D", "d"), 'datum') or
+    contains(translate(@id|@class, "M", "m"), 'meta') or
+    contains(@id|@class, 'time') or
+    contains(@id|@class, 'publish') or
+    contains(@id|@class, 'footer') or
+    contains(@class, 'info') or
+    contains(@class, 'post_detail') or
+    contains(@class, 'block-content') or
+    contains(@class, 'byline') or
+    contains(@class, 'subline') or
+    contains(@class, 'posted') or
+    contains(@class, 'submitted') or
+    contains(@class, 'created-post') or
+    contains(@class, 'publication') or
+    contains(@class, 'author') or
+    contains(@class, 'autor') or
+    contains(@class, 'field-content') or
+    contains(@class, 'fa-clock-o') or
+    contains(@class, 'fa-calendar') or
+    contains(@class, 'fecha') or
+    contains(@class, 'parution') or
+    contains(@id, 'footer-info-lastmod')
+] |
+.//footer | .//small
+"""
+
+
+def test_date_candidates_match_xpath():
+    docs = [
+        # attribute order
+        (
+            '<html><body><div itemprop="date" class="x" id="y">a</div>'
+            '<div id="y" itemprop="date" class="x">b</div>'
+            '<div class="x" itemprop="y" id="meta">c</div>'
+            '<div id="Meta" itemprop="y" class="x">d</div>'
+            '<div class="x" id="footer-info-lastmod">e</div>'
+            '<div class="x" itemprop="datePublished">f</div>'
+            '<div id="x" itemprop="Datum">g</div></body></html>'
+        ),
+        # case folding, itemprop alone, empty values
+        (
+            '<html><body><div class="DATE">a</div><div class="Datum">b</div>'
+            '<div itemprop="datePublished">c</div><div itemprop="meta">d</div>'
+            '<div class="" id="date">e</div><div class="">f</div></body></html>'
+        ),
+        # footer/small, non-fast tags, comments, PIs
+        (
+            '<html><body><footer><small class="x"><footer>a</footer></small></footer>'
+            '<article class="date">b</article><a class="byline">c</a>'
+            '<!--c--><?pi x?><p class="fecha">d</p></body></html>'
+        ),
+    ]
+    for doc in docs:
+        for tree in (load_html(doc), etree.fromstring(doc)):
+            for extensive, prepend in ((True, ".//*"), (False, FAST_PREPEND)):
+                assert date_candidates(tree, extensive) == tree.xpath(
+                    prepend + DATE_XPATH
+                )
+
+
+def test_exact_date():
+    """These pages should return an exact date"""
+    ## HTML tree
+    assert (
+        find_date(
+            '<html><head><meta property="dc:created" content="2017-09-01"/></head><body></body></html>'
+        )
+        == "2017-09-01"
+    )
+    # a cleaned media element (CLEANING_LIST) must not hide a nearby date
+    assert (
+        find_date("<html><body><video></video><p>2020-05-05</p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            '<html><head><meta property="og:published_time" content="2017-09-01"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="last-modified" content="2017-09-01"/></head><body></body></html>',
+            original_date=False,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta property="OG:Updated_Time" content="2017-09-01"/></head><body></body></html>',
+            extensive_search=False,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><Meta Property="og:updated_time" content="2017-09-01"/></head><body></body></html>',
+            extensive_search=False,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta property="og:regDate" content="20210820030646"></head><body></body></html>',
+            extensive_search=False,
+        )
+        == "2021-08-20"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="created" content="2017-01-09"/></head><body></body></html>'
+        )
+        == "2017-01-09"
+    )
+    # copyrightyear reserve, with and without extensive search
+    htmldoc = '<html><head><meta itemprop="copyrightyear" content="2017"/></head><body></body></html>'
+    for extensive in (True, False):
+        assert find_date(htmldoc, extensive_search=extensive) == "2017-01-01"
+    assert find_date(htmldoc, outputformat="%d %B %Y") == "01 January 2017"
+    # unpadded years below 1000 pass the positional check
+    htmldoc = htmldoc.replace("2017", " 999")
+    assert find_date(htmldoc, min_date="0500-01-01") in ("0999-01-01", "999-01-01")
+    # out of range: no reserve
+    assert find_date(htmldoc, extensive_search=False) is None
+    # a later meta without a date keeps the reserve
+    for meta in (
+        '<meta name="og:url" content="https://example.org/page"/>',
+        '<meta name="lastmodified" content="nonsense"/>',
+        '<meta http-equiv="last-modified" content="nonsense"/>',
+    ):
+        htmldoc = f'<html><head><meta property="article:published_time" content="2020-03-04"/>{meta}</head><body></body></html>'
+        assert find_date(htmldoc, extensive_search=False) == "2020-03-04"
+        htmldoc = f'<html><head><meta itemprop="copyrightyear" content="2019"/>{meta}</head><body></body></html>'
+        assert (
+            find_date(htmldoc, extensive_search=False, original_date=True)
+            == "2019-01-01"
+        )
+
+    # original date
+    htmldoc = '<html><head><meta property="OG:Updated_Time" content="2017-09-01"/><meta property="OG:DatePublished" content="2017-07-02"/></head><body/></html>'
+    assert (
+        find_date(
+            htmldoc,
+            original_date=True,
+        )
+        == "2017-07-02"
+    )
+    assert (
+        find_date(
+            htmldoc,
+            original_date=False,
+        )
+        == "2017-09-01"
+    )
+    htmldoc = """<html><head>
+                 <meta property="article:modified_time" content="2021-04-06T06:32:14+00:00" />
+                 <meta property="article:published_time" content="2020-07-21T00:17:28+00:00" />
+                 </head><body/></html>"""
+    assert find_date(htmldoc, original_date=True) == "2020-07-21"
+    assert find_date(htmldoc, original_date=False) == "2021-04-06"
+
+    htmldoc = """<html><head>
+                 <meta property="article:published_time" content="2020-07-21T00:17:28+00:00" />
+                 <meta property="article:modified_time" content="2021-04-06T06:32:14+00:00" />
+                 </head><body/></html>"""
+    assert find_date(htmldoc, original_date=True) == "2020-07-21"
+    assert find_date(htmldoc, original_date=False) == "2021-04-06"
+
+    ## meta in header
+    assert find_date("<html><head><meta/></head><body></body></html>") is None
+
+    assert (
+        find_date(
+            '<html><head><meta name="og:url" content="http://www.example.com/2018/02/01/entrytitle"/></head><body></body></html>'
+        )
+        == "2018-02-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta itemprop="datecreated" datetime="2018-02-02"/></head><body></body></html>'
+        )
+        == "2018-02-02"
+    )
+    assert (
+        find_date(
+            '<html><head><meta itemprop="datemodified" content="2018-02-04"/></head><body></body></html>'
+        )
+        == "2018-02-04"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="last-modified" content="2018-02-05"/></head><body></body></html>'
+        )
+        == "2018-02-05"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="lastmodified" content="2018-02-05"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2018-02-05"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="lastmodified" content="2018-02-05"/></head><body></body></html>',
+            original_date=False,
+        )
+        == "2018-02-05"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="date" content="2017-09-01"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="last-modified" content="2018-10-01"/><meta http-equiv="date" content="2017-09-01"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="last-modified" content="2018-10-01"/><meta http-equiv="date" content="2017-09-01"/></head><body></body></html>',
+            original_date=False,
+        )
+        == "2018-10-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="date" content="2017-09-01"/><meta http-equiv="last-modified" content="2018-10-01"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta http-equiv="date" content="2017-09-01"/><meta http-equiv="last-modified" content="2018-10-01"/></head><body></body></html>',
+            original_date=False,
+        )
+        == "2018-10-01"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="Publish_Date" content="02.02.2004"/></head><body></body></html>'
+        )
+        == "2004-02-02"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="pubDate" content="2018-02-06"/></head><body></body></html>'
+        )
+        == "2018-02-06"
+    )
+    assert (
+        find_date(
+            '<html><head><meta pubdate="pubDate" content="2018-02-06"/></head><body></body></html>'
+        )
+        == "2018-02-06"
+    )
+    assert (
+        find_date(
+            '<html><head><meta itemprop="DateModified" datetime="2018-02-06"/></head><body></body></html>'
+        )
+        == "2018-02-06"
+    )
+    assert (
+        find_date(
+            '<html><head><meta name="DC.Issued" content="2021-07-13"/></head><body></body></html>'
+        )
+        == "2021-07-13"
+    )
+    assert (
+        find_date(
+            '<html><head><meta itemprop="dateUpdate" datetime="2018-02-06"/></head><body></body></html>',
+            original_date=True,
+        )
+        == "2018-02-06"
+    )
+    assert (
+        find_date(
+            '<html><head><meta itemprop="dateUpdate" datetime="2018-02-06"/></head><body></body></html>',
+            original_date=False,
+        )
+        == "2018-02-06"
+    )
+
+    ## time in document body
+    assert find_date('<html><body><time datetime="08:00"></body></html>') is None
+    assert (
+        find_date('<html><body><time datetime="2014-07-10 08:30:45.687"></body></html>')
+        == "2014-07-10"
+    )
+    assert (
+        find_date(
+            '<html><head></head><body><time class="entry-time" itemprop="datePublished" datetime="2018-04-18T09:57:38+00:00"></body></html>'
+        )
+        == "2018-04-18"
+    )
+    assert (
+        find_date(
+            '<html><body><footer class="article-footer"><p class="byline">Veröffentlicht am <time class="updated" datetime="2019-01-03T14:56:51+00:00">3. Januar 2019 um 14:56 Uhr.</time></p></footer></body></html>'
+        )
+        == "2019-01-03"
+    )
+    assert (
+        find_date(
+            '<html><body><footer class="article-footer"><p class="byline">Veröffentlicht am <time class="updated" datetime="2019-01-03T14:56:51+00:00"></time></p></footer></body></html>'
+        )
+        == "2019-01-03"
+    )
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-27" class="entry-date"></time><time datetime="2011-09-28" class="updated"></time></body></html>',
+            original_date=True,
+        )
+        == "2011-09-27"
+    )
+    # updated vs original in time elements
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-27" class="entry-date"></time><time datetime="2011-09-28" class="updated"></time></body></html>',
+            original_date=False,
+        )
+        == "2011-09-28"
+    )
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-28" class="updated"></time><time datetime="2011-09-27" class="entry-date"></time></body></html>',
+            original_date=True,
+        )
+        == "2011-09-27"
+    )
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-28" class="updated"></time><time datetime="2011-09-27" class="entry-date"></time></body></html>',
+            original_date=False,
+        )
+        == "2011-09-28"
+    )
+    # removed from HTML5 https://www.w3schools.com/TAgs/att_time_datetime_pubdate.asp
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-28" pubdate="pubdate"></time></body></html>',
+            original_date=False,
+        )
+        == "2011-09-28"
+    )
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-28" pubdate="pubdate"></time></body></html>',
+            original_date=True,
+        )
+        == "2011-09-28"
+    )
+    assert (
+        find_date(
+            '<html><body><time datetime="2011-09-28" class="entry-date"></time></body></html>',
+            original_date=True,
+        )
+        == "2011-09-28"
+    )
+    # a shortcut <time> beats an older plain <time> (not min-folded)
+    for attr in ('pubdate="pubdate"', 'class="entry-time"'):
+        htmldoc = f'<html><body><time datetime="2016-05-05" {attr}></time><time datetime="2010-01-01"></time></body></html>'
+        assert find_date(htmldoc, original_date=True) == "2016-05-05", attr
+    # bug #54
+    assert (
+        find_date(
+            '<html><body><time class="Feed-module--feed__item-meta-time--3t1fg" dateTime="November 29, 2020">November 2020</time></body></html>',
+            outputformat="%Y-%m-%d %H:%m:%S",
+        )
+        == "2020-11-29 00:11:00"  # 00:11 unclear
+    )
+    assert (
+        find_date(
+            '<html><body><time class="Feed-module--feed__item-meta-time--3t1fg" dateTime="November 29, 2020">November 2020</time></body></html>',
+            outputformat="%Y-%m-%d",
+        )
+        == "2020-11-29"
+    )
+
+    ## precise pattern in document body
+    assert (
+        find_date(
+            '<html><body><font size="2" face="Arial,Geneva,Helvetica">Bei <a href="../../sonstiges/anfrage.php"><b>Bestellungen</b></a> bitte Angabe der Titelnummer nicht vergessen!<br><br>Stand: 03.04.2019</font></body></html>'
+        )
+        == "2019-04-03"
+    )
+    assert (
+        find_date(
+            "<html><body><div>Erstausstrahlung: 01.01.2020</div><div>Preisstand: 03.02.2022 03:00 GMT+1</div></body></html>"
+        )
+        == "2022-02-03"
+    )
+    assert find_date("<html><body>Datum: 10.11.2017</body></html>") == "2017-11-10"
+
+    # abbr in document body
+    assert (
+        find_date(
+            '<html><body><abbr class="published">am 12.11.16</abbr></body></html>',
+            original_date=False,
+        )
+        == "2016-11-12"
+    )
+    assert (
+        find_date(
+            '<html><body><abbr class="published">am 12.11.16</abbr></body></html>',
+            original_date=True,
+        )
+        == "2016-11-12"
+    )
+    assert (
+        find_date(
+            '<html><body><abbr class="published" title="2016-11-12">XYZ</abbr></body></html>',
+            original_date=True,
+        )
+        == "2016-11-12"
+    )
+    # an unparseable title does not stop the scan
+    assert (
+        find_date(
+            '<html><body><abbr class="published" title="nonsense">x</abbr><abbr class="published" title="2016-11-12">y</abbr></body></html>'
+        )
+        == "2016-11-12"
+    )
+    assert (
+        find_date(
+            '<html><body><abbr class="date-published">8.11.2016</abbr></body></html>'
+        )
+        == "2016-11-08"
+    )
+    # valid vs. invalid data-utime
+    assert (
+        find_date(
+            '<html><body><abbr data-utime="1438091078" class="something">A date</abbr></body></html>'
+        )
+        == "2015-07-28"
+    )
+    assert (
+        find_date(
+            '<html><body><abbr data-utime="143809-1078" class="something">A date</abbr></body></html>'
+        )
+        is None
+    )
+
+    # time in document body
+    assert (
+        find_date("<html><body><time>2018-01-04</time></body></html>") == "2018-01-04"
+    )
+
+    # additional XPath expressions
+    assert (
+        find_date('<html><body><div class="fecha">2018-01-04</div></body></html>')
+        == "2018-01-04"
+    )
+
+    ## other expressions in document body
+    assert (
+        find_date('<html><body>"datePublished":"2018-01-04"</body></html>')
+        == "2018-01-04"
+    )
+    # JSON-LD script block (json_search path)
+    assert (
+        find_date(
+            '<html><head><script type="application/ld+json"></script>'
+            '<script type="application/ld+json">{"@type":"Person"}</script>'
+            '<script type="application/ld+json">'
+            '{"@type":"Article","datePublished":"2020-05-05"}</script></head>'
+            "<body>x</body></html>",
+            original_date=True,
+        )
+        == "2020-05-05"
+    )
+    assert find_date("<html><body>Stand: 1.4.18</body></html>") == "2018-04-01"
+
+    # free text
+    assert find_date("<html><body>&copy; 2017</body></html>") == "2017-01-01"
+    assert find_date("<html><body>© 2017</body></html>") == "2017-01-01"
+    assert (
+        find_date(
+            "<html><body><p>Dieses Datum ist leider ungültig: 30. Februar 2018.</p></body></html>",
+            extensive_search=False,
+        )
+        is None
+    )
+    assert (
+        find_date(
+            "<html><body><p>Dieses Datum ist leider ungültig: 30. Februar 2018.</p></body></html>"
+        )
+        == "2018-01-01"
+    )
+
+    # URL in IMG
+    # header
+    assert (
+        find_date(
+            '<html><meta property="og:image" content="https://example.org/img/2019-05-05/test.jpg"><body></body></html>'
+        )
+        == "2019-05-05"
+    )
+    assert (
+        find_date(
+            '<html><meta property="og:image" content="https://example.org/img/test.jpg"><body></body></html>'
+        )
+        is None
+    )
+    # body
+    assert (
+        find_date(
+            '<html><body><img src="https://example.org/img/2019-05-05/test.jpg"/></body></html>'
+        )
+        == "2019-05-05"
+    )
+    assert (
+        find_date(
+            '<html><body><img src="https://example.org/img/test.jpg"/></body></html>'
+        )
+        is None
+    )
+    assert (
+        find_date(
+            '<html><body><img src="https://example.org/img/2019-05-03/test.jpg"/><img src="https://example.org/img/2019-05-04/test.jpg"/><img src="https://example.org/img/2019-05-05/test.jpg"/></body></html>'
+        )
+        == "2019-05-05"
+    )
+    assert (
+        find_date(
+            '<html><body><img src="https://example.org/img/2019-05-05/test.jpg"/><img src="https://example.org/img/2019-05-04/test.jpg"/><img src="https://example.org/img/2019-05-03/test.jpg"/></body></html>'
+        )
+        == "2019-05-05"
+    )
+    # in title
+    assert (
+        find_date(
+            "<html><head><title>Bericht zur Coronalage vom 22.04.2020 – worauf wartet die Politik? – DIE ACHSE DES GUTEN. ACHGUT.COM</title></head></html>"
+        )
+        == "2020-04-22"
+    )
+    # in unknown div
+    assert (
+        find_date(
+            '<html><body><div class="spip spip-block-right" style="text-align:right;">Le 26 juin 2019</div></body></html>',
+            extensive_search=False,
+        )
+        is None
+    )
+    assert (
+        find_date(
+            '<html><body><div class="spip spip-block-right" style="text-align:right;">Le 26 juin 2019</div></body></html>',
+            extensive_search=True,
+        )
+        == "2019-06-26"
+    )
+    # in link title
+    assert (
+        find_date(
+            '<html><body><a class="ribbon date " title="12th December 2018" href="https://example.org/" itemprop="url">Text</a></body></html>'
+        )
+        == "2018-12-12"
+    )
+
+    # min_date parameter
+    assert (
+        find_date(
+            '<html><meta><meta property="article:published_time" content="1991-01-02T01:01:00+01:00"></meta><body></body></html>',
+            min_date="2000-01-01",
+        )
+        is None
+    )
+    assert (
+        find_date(
+            '<html><meta><meta property="article:published_time" content="1991-01-02T01:01:00+01:00"></meta><body></body></html>',
+            min_date="1990-01-01",
+        )
+        == "1991-01-02"
+    )
+    assert (
+        find_date(
+            '<html><meta><meta property="article:published_time" content="1991-01-02T01:01:00+00:00"></meta><body></body></html>',
+            min_date="1991-01-02T01:02:00+00:00",
+        )
+        is None
+    )
+    assert (
+        find_date(
+            '<html><meta><meta property="article:published_time" content="1991-01-02T01:01:00+00:00"></meta><body></body></html>',
+            min_date="1991-01-02T01:00:00+00:00",
+        )
+        == "1991-01-02"
+    )
+
+    # wild text in body
+    assert (
+        find_date("<html><body>Wed, 19 Oct 2022 14:24:05 +0000</body></html>")
+        == "2022-10-19"
+    )
+
+
+def test_json_ld_over_header_reserve():
+    """A less reliable header date must not shadow an explicit JSON-LD date
+    (issue #195)."""
+    htmlstring = (
+        "<html><head>"
+        '<meta property="article:modified_time" content="2023-05-20T12:00:00+00:00"/>'
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"Article",'
+        '"datePublished":"2020-01-15T08:00:00+00:00",'
+        '"dateModified":"2023-05-20T12:00:00+00:00"}'
+        "</script></head><body><p>text</p></body></html>"
+    )
+    # the modification date is only a fallback here: JSON-LD has the original one
+    assert find_date(htmlstring, original_date=True) == "2020-01-15"
+    # the modification date is what was asked for, header result still wins
+    assert find_date(htmlstring, original_date=False) == "2023-05-20"
+
+    # without a JSON-LD alternative the header fallback is still used
+    assert (
+        find_date(
+            "<html><head>"
+            '<meta property="article:modified_time" content="2023-05-20T12:00:00+00:00"/>'
+            "</head><body><p>text</p></body></html>",
+            original_date=True,
+        )
+        == "2023-05-20"
+    )
+
+
+def test_examine_header():
+    """The examine_header() wrapper must return the header date, falling back
+    to the less reliable "reserve" date when nothing else was found."""
+    options = Extractor(False, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+
+    # only a reserve date (modification date) is available: it is returned
+    tree = load_html(
+        "<html><head>"
+        '<meta property="article:modified_time" content="2023-05-20T12:00:00+00:00"/>'
+        "</head><body><p>text</p></body></html>"
+    )
+    assert examine_header(tree, options) == "2023-05-20"
+
+    # a proper header date wins over the reserve mechanism
+    tree = load_html(
+        "<html><head>"
+        '<meta property="article:published_time" content="2020-01-15T08:00:00+00:00"/>'
+        "</head><body><p>text</p></body></html>"
+    )
+    assert examine_header(tree, options) == "2020-01-15"
+
+    # no header dates at all
+    tree = load_html("<html><head></head><body><p>text</p></body></html>")
+    assert examine_header(tree, options) is None
+
+
+def test_free_text_timezone():
+    """Time of day and time zone must be preserved when dates are extracted
+    from free text / JSON via regexes (issue #174)."""
+    tzformat = "%Y-%m-%d %H:%M:%S%z"
+
+    # JSON-LD datePublished with time and time zone
+    jsonld = (
+        '<html><head><script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"Article",'
+        '"datePublished":"2024-11-06T08:37:00+05:30"}'
+        "</script></head><body><p>text</p></body></html>"
+    )
+    assert (
+        find_date(jsonld, outputformat=tzformat, original_date=True)
+        == "2024-11-06 08:37:00+0530"
+    )
+    # default date-only output stays unchanged
+    assert find_date(jsonld, original_date=True) == "2024-11-06"
+
+    # JSON-LD dateModified with time and time zone
+    jsonld_mod = (
+        '<html><head><script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"Article",'
+        '"dateModified":"2024-11-06T08:37:00+05:30"}'
+        "</script></head><body><p>text</p></body></html>"
+    )
+    assert (
+        find_date(jsonld_mod, outputformat=tzformat, original_date=False)
+        == "2024-11-06 08:37:00+0530"
+    )
+
+    # timestamp found in free text of the body
+    freetext = (
+        "<html><body><p>Published on 2024-11-06T08:37:00+05:30 "
+        "by someone</p></body></html>"
+    )
+    assert (
+        find_date(freetext, outputformat=tzformat, original_date=True)
+        == "2024-11-06 08:37:00+0530"
+    )
+    assert find_date(freetext, original_date=True) == "2024-11-06"
+
+
+def test_1990s_dates():
+    "YEAR_RE's alternation must stay grouped, else a lone year matches and the date is lost."
+    for year in (1995, 1999, 2001, 2024):
+        jsonld = (
+            '<html><head><script type="application/ld+json">'
+            f'{{"datePublished":"{year}-03-05T08:37:00"}}'
+            "</script></head><body><p>x</p></body></html>"
+        )
+        assert (
+            find_date(jsonld, original_date=True, extensive_search=False)
+            == f"{year}-03-05"
+        ), year
+        body = f"<html><body><p>Published on {year}-03-05T08:37:00</p></body></html>"
+        assert find_date(body, extensive_search=False) == f"{year}-03-05", year
+
+
+def test_fast_mode_bare_date():
+    "Fast mode has no search_page fallback, so a bare date is accepted last."
+    doc = "<html><body><p>Some text published 2020-05-05 by someone</p></body></html>"
+    assert find_date(doc, extensive_search=False) == "2020-05-05"
+    # a full timestamp still wins over an earlier bare date
+    doc = (
+        "<html><body><p>menu 2019-01-01</p>"
+        "<p>published 2020-05-05T10:00:00</p></body></html>"
+    )
+    assert find_date(doc, extensive_search=False) == "2020-05-05"
+    # text after a comment is kept
+    doc = "<html><body><span>Published on <!-- ts -->2020-05-05</span></body></html>"
+    assert find_date(doc, extensive_search=False) == "2020-05-05"
+    # unpadded parts, output padded
+    for text in ("2020-1-15", "2020-1-15T10:00:00"):
+        doc = f"<html><body><p>Posted {text} by someone</p></body></html>"
+        assert find_date(doc, extensive_search=False) == "2020-01-15"
+    # dates in attributes, comments and script/style are not accepted
+    for snippet in (
+        '<a href="/theme.css?v=2021-03-04">menu</a>',
+        "<!-- 2021-03-04 -->",
+        "<style>/* 2021-03-04 */</style><script>var x = '2021-03-04';</script>",
+    ):
+        doc = f"<html><body>{snippet}<p>no dates in text</p></body></html>"
+        assert find_date(doc, extensive_search=False) is None
+
+
+def test_is_valid_date():
+    """test internal date validation"""
+
+    class NoTimestamp(datetime.datetime):
+        "Mimics Windows with naive dates before 1970."
+
+        def timestamp(self):
+            raise OSError
+
+    earliest = datetime.datetime(2000, 6, 1)
+    for month, expected in ((7, True), (5, False)):
+        assert (
+            is_valid_date(
+                NoTimestamp(2000, month, 1),
+                OUTPUTFORMAT,
+                earliest=earliest,
+                latest=LATEST_POSSIBLE,
+            )
+            is expected
+        )
+    assert (
+        is_valid_date(None, OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE)
+        is False
+    )
+    assert (
+        is_valid_date(
+            "2016-01-01", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "1998-08-08", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "2001-12-31", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "1992-07-30", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is False
+    )
+    assert (
+        is_valid_date(
+            "1901-13-98", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is False
+    )
+    assert (
+        is_valid_date("202-01", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE)
+        is False
+    )
+    # trailing content beyond the 10-char YYYY-MM-DD shape is ignored
+    # (positional read: only date_input[:4]/[5:7]/[8:10] matter)
+    assert (
+        is_valid_date(
+            "2020-01-01-01-01", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "2020-01-01 12:00:00-01-01",
+            OUTPUTFORMAT,
+            earliest=MIN_DATE,
+            latest=LATEST_POSSIBLE,
+        )
+        is True
+    )
+    # separator is not checked either (positional slicing, not strict ISO)
+    assert (
+        is_valid_date(
+            "2020/01/01", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "2020.01.01", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    # unpadded parts fall back to strptime
+    assert (
+        is_valid_date(
+            "2020-1-15", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "2020-1-35", OUTPUTFORMAT, earliest=MIN_DATE, latest=LATEST_POSSIBLE
+        )
+        is False
+    )
+    assert (
+        is_valid_date("1922", "%Y", earliest=MIN_DATE, latest=LATEST_POSSIBLE) is False
+    )
+    assert (
+        is_valid_date("2004", "%Y", earliest=MIN_DATE, latest=LATEST_POSSIBLE) is True
+    )
+    assert (
+        is_valid_date(
+            "1991-01-02",
+            OUTPUTFORMAT,
+            earliest=datetime.datetime(1990, 1, 1),
+            latest=LATEST_POSSIBLE,
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "1991-01-02",
+            OUTPUTFORMAT,
+            earliest=datetime.datetime(1992, 1, 1),
+            latest=LATEST_POSSIBLE,
+        )
+        is False
+    )
+    assert (
+        is_valid_date(
+            "1991-01-02",
+            OUTPUTFORMAT,
+            earliest=MIN_DATE,
+            latest=datetime.datetime(1990, 1, 1),
+        )
+        is False
+    )
+    assert (
+        is_valid_date(
+            "1991-01-02",
+            OUTPUTFORMAT,
+            earliest=datetime.datetime(1990, 1, 1),
+            latest=datetime.datetime(1995, 1, 1),
+        )
+        is True
+    )
+    assert (
+        is_valid_date(
+            "1991-01-02",
+            OUTPUTFORMAT,
+            earliest=datetime.datetime(1990, 1, 1),
+            latest=datetime.datetime(1990, 12, 31),
+        )
+        is False
+    )
+
+
+def test_convert_date():
+    """test date conversion"""
+    assert convert_date("2016-11-18", "%Y-%m-%d", "%d %B %Y") == "18 November 2016"
+    assert convert_date("18 November 2016", "%d %B %Y", "%Y-%m-%d") == "2016-11-18"
+    assert (
+        convert_date(datetime.datetime(2016, 11, 18), "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+        == "2016-11-18"
+    )
+
+
+def test_try_date_expr():
+    """test date extraction via external package"""
+    assert try_date_expr(None, OUTPUTFORMAT, False, MIN_DATE, LATEST_POSSIBLE) is None
+
+    assert (
+        try_date_expr(
+            "Fri, Sept 1, 2017", OUTPUTFORMAT, False, MIN_DATE, LATEST_POSSIBLE
+        )
+        is None
+    )
+
+    assert (
+        try_date_expr(
+            "Friday, September 01, 2017", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE
+        )
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr(
+            "Fr, 1 Sep 2017 16:27:51 MESZ",
+            OUTPUTFORMAT,
+            True,
+            MIN_DATE,
+            LATEST_POSSIBLE,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr(
+            "Freitag, 01. September 2017", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE
+        )
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr(
+            "Am 1. September 2017 um 15:36 Uhr schrieb",
+            OUTPUTFORMAT,
+            True,
+            MIN_DATE,
+            LATEST_POSSIBLE,
+        )
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr(
+            "Fri - September 1 - 2017", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE
+        )
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr("1.9.2017", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE)
+        == "2017-09-01"
+    )
+    assert (
+        try_date_expr("1/9/17", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE)
+        == "2017-09-01"
+    )  # assuming MDY format
+    assert (
+        try_date_expr("201709011234", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE)
+        == "2017-09-01"
+    )
+    # other output format
+    assert (
+        try_date_expr("1.9.2017", "%d %B %Y", True, MIN_DATE, LATEST_POSSIBLE)
+        == "01 September 2017"
+    )
+    # wrong
+    assert try_date_expr("201", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE) is None
+    assert (
+        try_date_expr("14:35:10", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE) is None
+    )
+    assert (
+        try_date_expr("12:00 h", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE) is None
+    )
+    # date range
+    assert (
+        try_date_expr("2005-2006", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE)
+        is None
+    )
+    # Mandarin
+    assert (
+        try_date_expr(
+            "发布时间: 2022-02-25 14:34", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE
+        )
+        == "2022-02-25"
+    )
+    # all-numeric strings without a year are not dates and must not be handed to the
+    # slow external parser (used to take ~1s each: a DoS amplifier)
+    for junk in ("1.2.3.4.5.6.7.8.9", "13.13.13.13.13.13", "13.13.13.13.99"):
+        try_date_expr.cache_clear()
+        start = time.perf_counter()
+        assert (
+            try_date_expr(junk, OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE) is None
+        )
+        assert time.perf_counter() - start < 0.5
+    # a well-formed YYYYMMDD whose date is out of range is rejected (not returned)
+    try_date_expr.cache_clear()
+    assert (
+        try_date_expr("18000101", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE) is None
+    )
+
+
+def test_compare_reference():
+    """test comparison function"""
+    options = Extractor(False, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    reference = datetime.datetime(2018, 2, 1)
+    assert compare_reference(None, "AAAA", options) is None
+    assert compare_reference(reference, "2018-33-01", options) is reference
+    assert compare_reference(None, "2018-02-01", options) == reference
+    assert compare_reference(reference, "2018-01-01", options) is reference
+    assert compare_reference(reference, "2018-03-01", options) == datetime.datetime(
+        2018, 3, 1
+    )
+    # wall-clock comparison across naive and aware dates
+    aware = datetime.datetime(
+        2020, 5, 5, 23, tzinfo=datetime.timezone(datetime.timedelta(hours=-5))
+    )
+    naive = datetime.datetime(2020, 5, 6, 1)
+    assert update_reference(aware, naive, False) is naive
+    assert update_reference(aware, naive, True) is aware
+    # unpadded years below 1000 keep the reference
+    assert compare_values(reference, "999-01-01T00:00:00.000000", options) is reference
+    # formats that do not parse back keep naive dates and time zones
+    tzformat = "%Y-%m-%dT%H:%M:%S%z"
+    doc = '<html><body><time datetime="{}">x</time></body></html>'
+    assert (
+        find_date(doc.format("2020-05-05T23:30:00-05:00"), outputformat=tzformat)
+        == "2020-05-05T23:30:00-0500"
+    )
+    assert (
+        find_date(
+            doc.format("2018-10-23"), outputformat=tzformat, extensive_search=False
+        )
+        == "2018-10-23T00:00:00"
+    )
+
+
+def test_candidate_selection():
+    """test the algorithm for several candidates"""
+    options = Extractor(False, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    # patterns
+    catch = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
+    yearpat = re.compile(r"^([0-9]{4})")
+    # nonsense
+    occurrences = Counter(
+        [
+            "20208956",
+            "20208956",
+            "20208956",
+            "19018956",
+            "209561",
+            "22020895607-12",
+            "2-28",
+        ]
+    )
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result is None
+    # plausible
+    occurrences = Counter(
+        [
+            "2016-12-23",
+            "2016-12-23",
+            "2016-12-23",
+            "2016-12-23",
+            "2017-08-11",
+            "2016-07-12",
+            "2017-11-28",
+        ]
+    )
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result.group(0) == "2017-11-28"
+
+    options = Extractor(False, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result.group(0) == "2016-07-12"
+    # mix plausible/implausible
+    occurrences = Counter(
+        ["2116-12-23", "2116-12-23", "2116-12-23", "2017-08-11", "2017-08-11"]
+    )
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result.group(0) == "2017-08-11"
+
+    options = Extractor(False, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    occurrences = Counter(
+        ["2116-12-23", "2116-12-23", "2116-12-23", "2017-08-11", "2017-08-11"]
+    )
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result.group(0) == "2017-08-11"
+    # taking date present twice, corner case
+    occurrences = Counter(
+        ["2016-12-23", "2016-12-23", "2017-08-11", "2017-08-11", "2017-08-11"]
+    )
+    result = select_candidate(occurrences, catch, yearpat, options)
+    assert result.group(0) == "2016-12-23"
+
+
+def test_regex_parse():
+    """test date extraction using rules and regular expressions"""
+    assert regex_parse("3. Dezember 2008") is not None
+    assert regex_parse("33. Dezember 2008") is None
+    assert regex_parse("3. Dez 2008") is not None
+    assert regex_parse("3 dez 2008") is not None
+    assert regex_parse("3 Aralık 2008 Çarşamba") is not None
+    assert regex_parse("3 Aralık 2008") is not None
+    assert regex_parse("Tuesday, March 26th, 2019") is not None
+    assert regex_parse("March 26, 2019") is not None
+    assert regex_parse("3rd Tuesday in March") is None
+    assert regex_parse("Mart 26, 2019") is not None
+    assert regex_parse("Salı, Mart 26, 2019") is not None
+    assert regex_parse("36/14/2016") is None
+    assert regex_parse("January 36 1998") is None
+    # leftmost match
+    text = (
+        "x" * 500 + " 2020 pixels, then 12. Oktober 2019 and March 3, 2021 " + "y" * 500
+    )
+    assert regex_parse(text) == datetime.datetime(2019, 10, 12)
+    assert regex_parse(
+        "Mart 26, 2019" + " " * 200 + "1 Mayıs 2020"
+    ) == datetime.datetime(2019, 3, 26)
+    assert regex_parse("no year here: 3. Dezember") is None
+    # overlap with previous year token
+    assert regex_parse("Oktober 2020 September 2020") == datetime.datetime(2020, 9, 20)
+    assert (
+        custom_parse("January 12 1098", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    )
+    assert custom_parse("1998-01", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    assert custom_parse("01-1998", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    assert custom_parse("13-1998", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    assert custom_parse("10.10.98", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    assert custom_parse("12122004", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    assert (
+        custom_parse("3/14/2016", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    )
+    assert custom_parse("20041212", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    assert custom_parse("1212-20-04", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    assert (
+        custom_parse("2004-12-12", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    )
+    assert custom_parse("33.20.2004", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    assert (
+        custom_parse("12.12.2004", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is not None
+    )
+    assert custom_parse("2019 28 meh", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE) is None
+    # regex-based matches
+    assert (
+        custom_parse("abcd 20041212 efgh", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE)
+        is not None
+    )
+    assert (
+        custom_parse("abcd 2004-2-12 efgh", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE)
+        is not None
+    )
+    assert (
+        custom_parse("abcd 2004-2 efgh", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE)
+        is not None
+    )
+    assert (
+        custom_parse(
+            "abcd 32. Januar 2020 efgh", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE
+        )
+        is None
+    )
+    # plausible but impossible dates
+    assert (
+        custom_parse("February 29 2008", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE)
+        == "2008-02-29"
+    )
+    assert (
+        custom_parse("February 30 2008", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE)
+        is None
+    )
+    assert (
+        custom_parse(
+            "XXTag, den 29. Februar 2008", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE
+        )
+        == "2008-02-29"
+    )
+    assert (
+        custom_parse(
+            "XXTag, den 30. Februar 2008", OUTPUTFORMAT, MIN_DATE, LATEST_POSSIBLE
+        )
+        is None
+    )
+    # for Nones caused by newlines and duplicates
+    en_full = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+    en_abbr = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ]
+    de_full = [
+        "Januar",
+        "Jänner",
+        "Februar",
+        "Feber",
+        "März",
+        "April",
+        "Mai",
+        "Juni",
+        "Juli",
+        "August",
+        "September",
+        "Oktober",
+        "November",
+        "Dezember",
+    ]
+    tr_full = [
+        "Ocak",
+        "Şubat",
+        "Mart",
+        "Nisan",
+        "Mayıs",
+        "Haziran",
+        "Temmuz",
+        "Ağustos",
+        "Eylül",
+        "Ekim",
+        "Kasım",
+        "Aralık",
+    ]
+    tr_abbr = [
+        "Oca",
+        "Şub",
+        "Mar",
+        "Nis",
+        "May",
+        "Haz",
+        "Tem",
+        "Ağu",
+        "Eyl",
+        "Eki",
+        "Kas",
+        "Ara",
+    ]
+    # genitive in dates ("12 października"), nominative in month-first formats
+    pl_gen = [
+        "stycznia",
+        "lutego",
+        "marca",
+        "kwietnia",
+        "maja",
+        "czerwca",
+        "lipca",
+        "sierpnia",
+        "września",
+        "października",
+        "listopada",
+        "grudnia",
+    ]
+    pl_nom = [
+        "Styczeń",
+        "Luty",
+        "Marzec",
+        "Kwiecień",
+        "Maj",
+        "Czerwiec",
+        "Lipiec",
+        "Sierpień",
+        "Wrzesień",
+        "Październik",
+        "Listopad",
+        "Grudzień",
+    ]
+    for month in en_full + en_abbr:
+        assert regex_parse(f"{month} 1st, 1998") is not None, month
+    for month in de_full + tr_full + tr_abbr + pl_nom:
+        assert regex_parse(f"{month} 1, 1998") is not None, month
+    assert regex_parse("1. Okt. 1998") is not None
+    for month in en_full + en_abbr + de_full + tr_full + tr_abbr + pl_gen + pl_nom:
+        assert regex_parse(f"1 {month} 1998") is not None, month
+    # dotted/dotless i
+    for month, mnum in [("MAYIS", 5), ("KASIM", 11), ("EKİM", 10), ("Mayis", 5)]:
+        expected = datetime.datetime(1998, mnum, 1)
+        assert regex_parse(f"1 {month} 1998") == expected, month
+    # glued month names match, non-month words are skipped
+    assert regex_parse("Xjune 5, 2020") == datetime.datetime(2020, 6, 5)
+    assert regex_parse("By John SmithMarch 5, 2020") == datetime.datetime(2020, 3, 5)
+    assert regex_parse("WednesdayJanuary 5, 2020") == datetime.datetime(2020, 1, 5)
+    assert regex_parse("a" * 100000 + "March 5, 2020") == datetime.datetime(2020, 3, 5)
+    # a skipped match can overlap the real date
+    assert regex_parse("Smith 5 2020 March 2021") == datetime.datetime(2021, 3, 20)
+    assert regex_parse("1 apple 2020 5 June 2020") == datetime.datetime(2020, 6, 5)
+    assert regex_parse("Top 10 Walmart 2020") is None
+    assert regex_parse("31 Tennis 2020 then 5 June 2020") == datetime.datetime(
+        2020, 6, 5
+    )
+    # impossible dates are skipped whole
+    assert regex_parse("31 June 2020, 5 July 2020") == datetime.datetime(2020, 7, 5)
+    assert regex_parse("Top 100 March 2020, updated 5 April 2020") == datetime.datetime(
+        2020, 4, 5
+    )
+    assert regex_parse("31 June 2020") is None
+
+
+def test_polish_dates():
+    "Polish dates: dateparser misses prefixed ones and fast mode never calls it."
+    for text, expected in (
+        ("Opublikowano: 12 października 2025", datetime.datetime(2025, 10, 12)),
+        ("3 marca 2024 r.", datetime.datetime(2024, 3, 3)),
+        ("1 maja 2023", datetime.datetime(2023, 5, 1)),
+        ("Data publikacji: 29 lutego 2024", datetime.datetime(2024, 2, 29)),
+        ("AKTUALIZACJA: 5 WRZEŚNIA 2024", datetime.datetime(2024, 9, 5)),
+        ("10 wrzesnia 2024", datetime.datetime(2024, 9, 10)),
+        ("12 pazdziernika 2025", datetime.datetime(2025, 10, 12)),
+        ("październik 12, 2025", datetime.datetime(2025, 10, 12)),
+        ("15 grudzień 2023", datetime.datetime(2023, 12, 15)),
+        # impossible dates, missing day or year as for other languages
+        ("31 lutego 2024", None),
+        ("29 lutego 2023", None),
+        ("12 października", None),
+        ("październik 2025", None),
+        # no three-letter abbreviations ("lip", "lis", "sie", "sty"): glued words
+        # match by suffix, so they would turn names into dates
+        ("Philip 5, 2020", None),
+        ("Minneapolis 5, 2020", None),
+        ("Rosie 5, 2020", None),
+        ("Dynasty 3, 2021", None),
+    ):
+        assert regex_parse(text) == expected, text
+    doc = '<html><body><p class="date">{}</p></body></html>'
+    for extensive in (True, False):
+        assert (
+            find_date(
+                doc.format("Opublikowano: 12 października 2025"),
+                extensive_search=extensive,
+            )
+            == "2025-10-12"
+        ), extensive
+    # abbreviations are left to dateparser
+    assert find_date(doc.format("12 paź 2025")) == "2025-10-12"
+
+
+def test_month_names_match_dateparser():
+    "Every name in MONTHS is a dateparser month name with the same number."
+    known = {}
+    for language in ("en", "de", "fr", "id", "pl", "tr"):
+        info = importlib.import_module(
+            f"dateparser.data.date_translation_data.{language}"
+        ).info
+        for number, key in enumerate(MONTH_KEYS, 1):
+            for name in (n.strip() for n in info.get(key, [])):
+                if len(name) >= 3 and name.isalpha():
+                    known[_fold_month_name(name)] = number
+    # folding must not collapse two names onto one key
+    assert len(MONTH_NUMBERS) == sum(map(len, MONTHS))
+    # regex_parse caps glued words at 12 letters
+    assert max(map(len, MONTH_NUMBERS)) <= 12
+    # unaccented "aout" is absent from dateparser's French data
+    assert set(MONTH_NUMBERS) - set(known) <= {"aout"}
+    assert not {k: v for k, v in MONTH_NUMBERS.items() if known.get(k, v) != v}
+
+
+def test_external_date_parser():
+    """test external date parser"""
+    assert (
+        external_date_parser("Wednesday, January 1st 2020", OUTPUTFORMAT)
+        == "2020-01-01"
+    )
+    assert external_date_parser("Random text with 2020", OUTPUTFORMAT) is None
+    # https://github.com/scrapinghub/dateparser/issues/333
+    assert external_date_parser("1 January 0001", "%d %B %Y") in (
+        "01 January 1",
+        "01 January 0001",
+    )
+    assert external_date_parser("1 January 1900", "%d %B %Y") == "01 January 1900"
+    # https://github.com/scrapinghub/dateparser/issues/406
+    assert (
+        external_date_parser("2018-04-12 17:20:03.12345678999a", OUTPUTFORMAT)
+        == "2018-04-12"
+    )
+    # https://github.com/scrapinghub/dateparser/issues/685
+    assert external_date_parser("12345678912 days", OUTPUTFORMAT) is None
+    # pure digit strings skip the external parser
+    try_date_expr.cache_clear()
+    with patch("htmldate.extractors._external_date") as mock_parser:
+        assert (
+            try_date_expr("45025", OUTPUTFORMAT, True, MIN_DATE, LATEST_POSSIBLE)
+            is None
+        )
+        mock_parser.assert_not_called()
+    assert get_external_parser() is get_external_parser()
+    # https://github.com/scrapinghub/dateparser/issues/680
+    assert external_date_parser("2.2250738585072011e-308", OUTPUTFORMAT) is None
+    assert external_date_parser("⁰⁴⁵₀₁₂", OUTPUTFORMAT) is None
+    # dateparser results in formats that do not parse back
+    for outputformat, expected in (
+        ("%Y-%m-%dT%H:%M:%S%z", "2019-03-05T00:00:00"),
+        ("%B %d", "March 05"),
+    ):
+        assert (
+            try_date_expr(
+                "5 de marzo de 2019", outputformat, True, MIN_DATE, LATEST_POSSIBLE
+            )
+            == expected
+        )
+
+
+def test_external_parser_gate():
+    doc = "<html><body>{}</body></html>"
+    # non-English day precision
+    assert (
+        find_date(doc.format("<time>5 de marzo de 2019</time>"), extensive_search=True)
+        == "2019-03-05"
+    )
+    assert (
+        find_date(doc.format("<p>3 de mayo de 2019</p>"), extensive_search=True)
+        == "2019-05-03"
+    )
+    # independent of original_date
+    time_elem = doc.format('<time class="updated" datetime="3 мая 2019">x</time>')
+    for original in (False, True):
+        assert (
+            find_date(time_elem, extensive_search=True, original_date=original)
+            == "2019-05-03"
+        )
+    # 2-digit year with any dateparser month name
+    for text, expected in (
+        ("05 Mar 19", "2019-03-05"),
+        ("05 marzo 19", "2019-03-05"),
+        ("12 мая 19", "2019-05-12"),
+    ):
+        assert (
+            find_date(doc.format(f'<p class="date">{text}</p>'), extensive_search=True)
+            == expected
+        ), text
+    # year range follows min_date
+    assert (
+        find_date(
+            doc.format('<p class="date">March 5, 1985</p>'),
+            extensive_search=True,
+            min_date="1980-01-01",
+        )
+        == "1985-03-05"
+    )
+    # letterless strings never sent
+    try_date_expr.cache_clear()
+    with patch("htmldate.extractors._external_date") as mock_parser:
+        assert (
+            find_date(
+                doc.format('<p class="date">(66) 9 8436-0806</p>'),
+                extensive_search=True,
+            )
+            is None
+        )
+        mock_parser.assert_not_called()
+
+
+def test_url():
+    """test url parameter"""
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://example.com/category/2016/07/12/key-words",
+        )
+        == "2016-07-12"
+    )
+    # deferred_url_extractor falls back to the URL date when the page has none
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://example.com/category/2016/07/12/key-words",
+            deferred_url_extractor=True,
+        )
+        == "2016-07-12"
+    )
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://example.com/2016/key-words",
+        )
+        is None
+    )
+    # impossible date in the URL
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://example.com/2016/02/30/key-words",
+        )
+        is None
+    )
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://www.kreditwesen.org/widerstand-berlin/2012-11-29/keine-kurzung-bei-der-jugend-klubs-konnen-vorerst-aufatmen-bvv-beschliest-haushaltsplan/",
+        )
+        == "2012-11-29"
+    )
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://www.kreditwesen.org/widerstand-berlin/6666-42-87/",
+        )
+        is None
+    )
+    assert (
+        find_date(
+            "<html><body><p>Z.</p></body></html>",
+            url="https://www.pamelaandersonfoundation.org/news/2019/6/26/dm4wjh7skxerzzw8qa8cklj8xdri5j",
+        )
+        == "2019-06-26"
+    )
+
+
+def test_approximate_url():
+    """test url parameter"""
+    assert (
+        find_date(
+            "<html><body><p>Aaa, bbb.</p></body></html>",
+            url="http://example.com/category/2016/",
+        )
+        is None
+    )
+
+
+def test_search_pattern():
+    """test pattern search in strings"""
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    pattern = re.compile(r"\D([0-9]{4}[/.-][0-9]{2})\D")
+    catch = re.compile(r"([0-9]{4})[/.-]([0-9]{2})")
+    yearpat = re.compile(r"^([12][0-9]{3})")
+    assert (
+        search_pattern(
+            "It happened on the 202.E.19, the day when it all began.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is None
+    )
+    assert (
+        search_pattern(
+            "The date is 2002.02.15.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is not None
+    )
+    assert (
+        search_pattern(
+            "http://www.url.net/index.html",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is None
+    )
+    assert (
+        search_pattern(
+            "http://www.url.net/2016/01/index.html",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is not None
+    )
+    #
+    pattern = re.compile(r"\D([0-9]{2}[/.-][0-9]{4})\D")
+    catch = re.compile(r"([0-9]{2})[/.-]([0-9]{4})")
+    yearpat = re.compile(r"([12][0-9]{3})$")
+    assert (
+        search_pattern(
+            "It happened on the 202.E.19, the day when it all began.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is None
+    )
+    assert (
+        search_pattern(
+            "It happened on the 15.02.2002, the day when it all began.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is not None
+    )
+    #
+    pattern = re.compile(r"\D(2[01][0-9]{2})\D")
+    catch = re.compile(r"(2[01][0-9]{2})")
+    yearpat = re.compile(r"^(2[01][0-9]{2})")
+    assert (
+        search_pattern(
+            "It happened in the film 300.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is None
+    )
+    assert (
+        search_pattern(
+            "It happened in 2002.",
+            pattern,
+            catch,
+            yearpat,
+            options,
+        )
+        is not None
+    )
+
+
+def test_search_normalized():
+    # separator variants add up: 2 against 3 keeps the newer
+    assert (
+        search_normalized(
+            " 01.02.2020 x 01/02/2020 x 05.03.2019 x 05.03.2019 x 05.03.2019 ",
+            SELECT_YMD_PATTERN,
+            SELECT_YMD_YEAR,
+            partial(normalize_match, THREE_COMP_REGEX_A),
+            0,
+            OPTIONS,
+        )
+        == "2020-02-01"
+    )
+
+
+def test_search_html():
+    "Test the pattern search in raw HTML"
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    # tree input
+    assert (
+        search_page("<html><body><p>The date is 5/2010</p></body></html>", options)
+        == "2010-05-01"
+    )
+    assert (
+        search_page("<html><body><p>The date is 5.5.2010</p></body></html>", options)
+        == "2010-05-05"
+    )
+    assert (
+        search_page("<html><body><p>The date is 11/10/99</p></body></html>", options)
+        == "1999-10-11"
+    )
+    assert (
+        search_page("<html><body><p>The date is 3/3/11</p></body></html>", options)
+        == "2011-03-03"
+    )
+    assert (
+        search_page("<html><body><p>The date is 06.12.06</p></body></html>", options)
+        == "2006-12-06"
+    )
+    assert (
+        search_page(
+            "<html><body><p>The timestamp is 20140915D15:23H</p></body></html>", options
+        )
+        == "2014-09-15"
+    )
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+    assert (
+        search_page(
+            "<html><body><p>It could be 2015-04-30 or 2003-11-24.</p></body></html>",
+            options,
+        )
+        == "2003-11-24"
+    )
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    assert (
+        search_page(
+            "<html><body><p>It could be 2015-04-30 or 2003-11-24.</p></body></html>",
+            options,
+        )
+        == "2015-04-30"
+    )
+    assert (
+        search_page(
+            "<html><body><p>It could be 03/03/2077 or 03/03/2013.</p></body></html>",
+            options,
+        )
+        == "2013-03-03"
+    )
+    assert (
+        search_page(
+            "<html><body><p>It could not be 03/03/2077 or 03/03/1988.</p></body></html>",
+            options,
+        )
+        is None
+    )
+    assert (
+        search_page(
+            "<html><body><p>© The Web Association 2013.</p></body></html>", options
+        )
+        == "2013-01-01"
+    )
+    assert (
+        search_page("<html><body><p>Next © Copyright 2018</p></body></html>", options)
+        == "2018-01-01"
+    )
+    assert (
+        search_page("<html><body><p> © Company 2014-2019 </p></body></html>", options)
+        == "2019-01-01"
+    )
+    assert (
+        search_page(
+            "<html><body><p> &copy; Copyright 1999-2020 Asia Pacific Star. All rights reserved.</p></body></html>",
+            options,
+        )
+        == "2020-01-01"
+    )
+    assert (
+        search_page(
+            '<html><head><link xmlns="http://www.w3.org/1999/xhtml"/></head></html>',
+            options,
+        )
+        is None
+    )
+    assert (
+        search_page(
+            '<html><body><link href="//homepagedesigner.telekom.de/.cm4all/res/static/beng-editor/5.1.98/css/deploy.css"/></body></html>',
+            options,
+        )
+        is None
+    )
+    # a plain YYYY/MM candidate (no copyright) resolves to the first of the month
+    assert (
+        search_page("<html><body><p>2010/05</p></body></html>", options) == "2010-05-01"
+    )
+    # a YYYY-MM candidate older than the copyright year is skipped in favour of it
+    assert (
+        search_page(
+            "<html><body><footer>© 2021 Example.</footer><p>2018/05</p></body></html>",
+            options,
+        )
+        == "2021-01-01"
+    )
+    # a custom (mid-year) minimum date rejects a same-year but earlier copyright date
+    assert (
+        search_page(
+            "<html><body><footer>© 1995 Example Corp.</footer></body></html>",
+            Extractor(
+                True,
+                LATEST_POSSIBLE,
+                datetime.datetime(1995, 6, 1),
+                False,
+                OUTPUTFORMAT,
+            ),
+        )
+        is None
+    )
+
+
+def test_copyright_redos():
+    "A page repeating a copyright token with no year must not hang (ReDoS guard)."
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, False, OUTPUTFORMAT)
+    # the unbounded \D* used to backtrack quadratically here (~10s at 8000 tokens)
+    payload = "<html><body><footer>" + ("Copyright " * 8000) + "</footer></body></html>"
+    start = time.perf_counter()
+    assert search_page(payload, options) is None
+    # generous threshold: bounded form runs in well under 0.1s, unbounded took ~10s
+    assert time.perf_counter() - start < 2.0
+    # a genuine copyright year is still extracted unchanged
+    assert (
+        search_page("<html><body><p>© 2021 Example Corp</p></body></html>", options)
+        == "2021-01-01"
+    )
+
+
+def test_idiosyncrasies():
+    assert (
+        find_date("<html><body><p><em>Last updated: 5/5/20</em></p></body></html>")
+        == "2020-05-05"
+    )
+    # year-first form (4-digit leading group)
+    assert (
+        find_date("<html><body><p><em>Last updated: 2020/05/05</em></p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 01/23/2021</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 01/23/21</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 1/23/21</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 23/1/21</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 23/01/21</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 23/01/2021</em></p></body></html>")
+        == "2021-01-23"
+    )
+    assert (
+        find_date("<html><body><p><em>Last updated: 33/23/3033</em></p></body></html>")
+        is None
+    )
+    assert (
+        find_date("<html><body><p><em>Published: 5/5/2020</em></p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date("<html><body><p><em>Published in: 05.05.2020</em></p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date("<html><body><p><em>Son güncelleme: 5/5/20</em></p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date("<html><body><p><em>Son güncellenme: 5/5/2020</em></p></body></html>")
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p><em>Yayımlama tarihi: 05.05.2020</em></p></body></html>"
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p><em>Son güncelleme tarihi: 5/5/20</em></p></body></html>"
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p><em>5/5/20 tarihinde güncellendi.</em></p></body></html>"
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            """<html><body><p><em>5/5/20'de güncellendi.</em></p></body></html>"""
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p><em>5/5/2020 tarihinde yayımlandı.</em></p></body></html>"
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p><em>05.05.2020 tarihinde yayınlandı.</em></p></body></html>"
+        )
+        == "2020-05-05"
+    )
+    assert (
+        find_date(
+            "<html><body><p>veröffentlicht am 6.12.06</p></body></html>",
+        )
+        == "2006-12-06"
+    )
+    # date-dense document: prefilter cap exhausted, full-scan fallback
+    dense = "999.99.99 " * 1500
+    assert idiosyncrasies_search(dense + "updated: 2021.07.13", OPTIONS) == "2021-07-13"
+    assert idiosyncrasies_search(dense, OPTIONS) is None
+
+
+def test_parser():
+    """test argument parsing for the command-line interface"""
+    testargs = [
+        "-v",
+        "--original",
+        "-max",
+        "2015-12-31",
+        "-u",
+        "https://www.example.org",
+    ]
+    args = parse_args(testargs)
+    assert args.fast is False
+    assert args.original is True
+    assert args.verbose is True
+    assert args.maxdate == "2015-12-31"
+    assert args.URL == "https://www.example.org"
+    testargs = ["-min", "2015-12-31"]
+    args = parse_args(testargs)
+    assert args.fast is False
+    assert args.original is False
+    assert args.verbose is False
+    assert args.mindate == "2015-12-31"
+    # version
+    f = io.StringIO()
+    testargs = ["--version"]
+    with pytest.raises(SystemExit) as e, redirect_stdout(f):
+        parse_args(testargs)
+    assert e.type is SystemExit and e.value.code == 0
+    assert re.match(
+        r"Htmldate [0-9]\.[0-9]+\.[0-9] - Python [0-9]\.[0-9]+\.[0-9]", f.getvalue()
+    )
+
+
+def test_cli():
+    "Test the command-line interface"
+    testargs = ["--original"]
+    args = parse_args(testargs)
+
+    assert cli_examine(None, args) is None
+    assert cli_examine(" ", args) is None
+    assert cli_examine("0" * int(10e7), args) is None
+
+    args.fast = True
+    assert cli_examine(" ", args) is None
+    assert cli_examine("0" * int(10e7), args) is None
+
+    args.fast = False
+    assert (
+        cli_examine(
+            '<?xml version="1.0" encoding="utf-8"?><!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/></head><body><p>A</p><p>B</p></body></html>',
+            args,
+        )
+        is None
+    )
+    assert (
+        cli_examine(
+            '<html><body><span class="entry-date">12. Juli 2016</span></body></html>',
+            args,
+        )
+        == "2016-07-12"
+    )
+    assert cli_examine("<html><body>2016-07-12</body></html>", args) == "2016-07-12"
+
+    args.maxdate = "2015-01-01"
+    assert (
+        cli_examine(
+            "<html><body>2016-07-12</body></html>",
+            args,
+        )
+        is None
+    )
+
+    args.maxdate = "2017-12-31"
+    assert (
+        cli_examine(
+            "<html><body>2016-07-12</body></html>",
+            args,
+        )
+        == "2016-07-12"
+    )
+
+    args.maxdate = "2017-41-41"
+    assert (
+        cli_examine(
+            "<html><body>2016-07-12</body></html>",
+            args,
+        )
+        == "2016-07-12"
+    )
+
+    # first test
+    testargs = ["-u", "123", "-v"]
+    args = parse_args(testargs)
+    with pytest.raises(SystemExit) as err:
+        process_args(args)
+    assert err.type is SystemExit
+    # meaningful test
+    testargs = ["-u", "https://httpbun.com/html"]
+    args = parse_args(testargs)
+    f = io.StringIO()
+    with redirect_stdout(f):
+        process_args(args)
+    assert len(f.getvalue()) == 0
+    # second test
+    args.URL = None
+    args.inputfile = os.path.join(TEST_DIR, "testlist.txt")
+    f = io.StringIO()
+    with redirect_stdout(f):
+        process_args(args)
+    assert f.getvalue() == "https://httpbun.com/html\tNone\n"
+    # stdin path: no URL and no input file -> read stdin, write result to stdout
+    args = parse_args([])
+    stdin_html = (
+        '<html><head><meta property="article:published_time" '
+        'content="2016-07-12"/></head><body></body></html>'
+    )
+    f = io.StringIO()
+    with patch("sys.stdin", io.StringIO(stdin_html)):
+        with redirect_stdout(f):
+            process_args(args)
+    assert f.getvalue() == "2016-07-12\n"
+
+
+def test_download():
+    """test page download"""
+    with pytest.raises(SystemExit):
+        with patch.object(sys, "argv", ["", "-u", "https://httpbin.org/status/404"]):
+            main()
+
+    testargs = ["--original"]
+    args = parse_args(testargs)
+
+    url = "https://httpbin.org/status/200"
+    teststring = fetch_url(url)
+    assert teststring is None
+    assert cli_examine(teststring, args) is None
+    url = "https://httpbun.com/links/2/2"
+    teststring = fetch_url(url)
+    assert teststring is not None
+    assert cli_examine(teststring, args) is None
+    url = "https://httpbun.com/html"
+    teststring = fetch_url(url)
+    assert teststring is not None
+    assert cli_examine(teststring, args) is None
+
+
+def test_encoding_detection():
+    """detect_encoding handles the optional cchardet module being absent or unhelpful"""
+    assert detect_encoding("öäü encoding test".encode("utf-8")) == ["utf-8"]
+    data = "öäü encoding test".encode("latin-1")  # not valid UTF-8
+    # cchardet absent (optional dep not installed)
+    with patch.object(htmldate.utils, "cchardet_detect", None):
+        assert detect_encoding(data)
+    # cchardet present but returns no encoding
+    with patch.object(
+        htmldate.utils, "cchardet_detect", Mock(return_value={"encoding": None})
+    ):
+        assert detect_encoding(data)
+
+
+def test_decode_file():
+    assert decode_file("öäü") == "öäü"
+    # utf-8 decodes directly, without detection
+    with patch.object(htmldate.utils, "detect_encoding") as detect:
+        assert decode_file("öäü".encode("utf-8")) == "öäü"
+    detect.assert_not_called()
+    # long enough for charset_normalizer alone (cchardet is optional)
+    text = "Grüße aus München, schöne Äpfel und Öl. " * 5
+    assert decode_file(text.encode("latin-1")) == text
+    # unknown or wrong guesses fall back to a lossy utf-8 decoding
+    with patch.object(
+        htmldate.utils, "detect_encoding", return_value=["unknown", "ascii"]
+    ):
+        assert decode_file("öäü".encode("latin-1")) == "�" * 3
+
+
+def test_lazy_dateparser():
+    code = "import sys, htmldate; assert 'dateparser' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_fetch_url_errors():
+    """fetch_url error branches (mocked, no network)"""
+    # non-200 response
+    with patch(
+        "htmldate.utils.HTTP_POOL.request", return_value=Mock(status=404, data=b"x")
+    ):
+        assert fetch_url("https://example.org") is None
+    # 200 but the body is not a usable document
+    with patch(
+        "htmldate.utils.HTTP_POOL.request", return_value=Mock(status=200, data=b"")
+    ):
+        assert fetch_url("https://example.org") is None
+    # a URL input that cannot be fetched raises in load_html
+    with patch("htmldate.utils.fetch_url", return_value=None):
+        with pytest.raises(ValueError):
+            load_html("http://example.org/page")
+
+
+def test_dependencies():
+    "Test README examples for consistency"
+    assert (
+        try_date_expr(
+            "Fri | September 1 | 2017",
+            OUTPUTFORMAT,
+            True,
+            MIN_DATE,
+            LATEST_POSSIBLE,
+        )
+        == "2017-09-01"
+    )
+
+
+def test_deferred():
+    "Test deferred extraction"
+    htmlstring = """<html><head>
+    <link rel="canonical" href="https://example.org/2017/08/30/this.html"/>
+    <meta property="og:published_time" content="2017-09-01"/>
+    </head><body></body></html>"""
+    assert find_date(htmlstring, deferred_url_extractor=True) == "2017-09-01"
+    assert find_date(htmlstring, deferred_url_extractor=False) == "2017-08-30"

@@ -1,0 +1,9 @@
+include README.md CHANGELOG.md CONTRIBUTING.md LICENSE pyproject.toml
+include htmldate/py.typed
+include tests/unit_tests.py
+include tests/testlist.txt
+
+exclude tests/realworld_tests.py
+recursive-exclude tests/cache/
+recursive-exclude tests/eval/
+recursive-exclude tests/test_set/

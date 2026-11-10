@@ -1,0 +1,87 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+env:
+  REF_PY_VERSION: "3.13"
+
+jobs:
+  build:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        env: [{ MINIMAL: "true" }, { MINIMAL: "false" }]
+        include:
+        # custom python versions
+        - os: macos-latest
+          python-version: "3.13"
+        - os: windows-latest
+          python-version: "3.13"
+    steps:
+    - uses: actions/checkout@v5
+
+    # Python and pip setup
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+        allow-prereleases: true
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: pyproject.toml
+
+    - name: Install dependencies
+      run: uv pip install --system -e ".[dev]"
+
+    # tests
+    - name: Lint with ruff
+      run: ruff check .
+
+    - name: Code format and type checking
+      if: ${{ matrix.python-version == env.REF_PY_VERSION }}
+      run: |
+        ruff format --check --diff htmldate tests
+        mypy -p htmldate
+
+    - name: Install full dependencies
+      if: ${{ matrix.env.MINIMAL == 'false'}}
+      run: uv pip install --system -e ".[all]"
+
+    - name: Test with pytest
+      run: |
+        python -m pytest --cov=./ --cov-report=xml
+
+    # benchmark regression gate (timezone pinned for a reproducible F1-score)
+    - name: Evaluation quality gate
+      if: ${{ matrix.env.MINIMAL == 'false' && matrix.python-version == env.REF_PY_VERSION }}
+      env:
+        TZ: Europe/Berlin
+      run: cd tests && python eval_gate.py
+
+    # coverage
+    - name: Upload coverage to Codecov
+      if: ${{ matrix.env.MINIMAL == 'false' && matrix.python-version == env.REF_PY_VERSION }}
+      uses: codecov/codecov-action@v5
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      with:
+        fail_ci_if_error: true
+        files: ./coverage.xml
+        verbose: true

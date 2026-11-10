@@ -1,0 +1,146 @@
+"""
+Bundles extraction and evaluation functions for all libraries in the benchmark.
+"""
+
+import json
+import os
+import re
+
+from htmldate import find_date
+from htmldate.utils import decode_file
+from htmldate.validators import convert_date
+
+# Optional third-party libraries, only needed for the full benchmark
+# (i.e. comparison.py *without* --small). Guard the imports so the
+# htmldate-only run works without these heavy/legacy packages installed.
+try:
+    from articleDateExtractor import extractArticlePublishedDate
+    from date_guesser import guess_date
+    from goose3 import Goose
+    from newspaper import Article, parsers
+    from newsplease import NewsPlease
+except ImportError:
+    extractArticlePublishedDate = guess_date = Goose = None
+    Article = parsers = NewsPlease = None
+
+
+TEST_DIR = os.path.abspath(os.path.dirname(__file__))
+# list the jsons containing the pages here
+eval_paths = ["eval_mediacloud_2020.json", "eval_default.json"]
+# load the pages here
+EVAL_PAGES = {}
+for each in eval_paths:
+    evalpath = os.path.join(TEST_DIR, each)
+    with open(evalpath, "r", encoding="utf-8") as f:
+        EVAL_PAGES.update(json.load(f))
+
+G = Goose() if Goose is not None else None
+
+
+def load_document(filename):
+    """load mock page from samples"""
+    # look for the right directory
+    for directory in ("test_set", "cache", "eval"):
+        mypath = os.path.join(TEST_DIR, directory, filename)
+        if os.path.isfile(mypath):
+            break
+    with open(mypath, "rb") as inputf:
+        return decode_file(inputf.read())
+
+
+def run_htmldate_extensive(htmlstring):
+    """run htmldate on content"""
+    return find_date(htmlstring, original_date=True, extensive_search=True)
+
+
+def run_htmldate_fast(htmlstring):
+    """run htmldate on content"""
+    return find_date(htmlstring, original_date=True, extensive_search=False)
+
+
+def run_newspaper(htmlstring):
+    """try with the newspaper module (newspaper4k)
+
+    Only the publication date is needed, so we run newspaper's cheap metadata
+    pass (``get_publishing_date``) and stop before ``calculate_best_node`` and
+    the rest of ``parse()``. This skips the per-language NLP tokenizers (much
+    faster, and avoids the optional language-data dependencies) and yields the
+    exact same date. Note: feeding the HTML via ``download(input_html=...)`` is
+    the correct newspaper4k entry point -- the older ``Article(html)`` hack
+    raised ``UnicodeEncodeError`` on non-ASCII pages, silently counting them as
+    misses. ``extractor.get_publishing_date`` is semi-internal: pin newspaper4k.
+    """
+    try:
+        article = Article(url="")
+        article.download(input_html=htmlstring)
+        article.doc = parsers.fromstring(article.html)
+        if article.doc is None:
+            return None
+        publish_date = article.extractor.get_publishing_date(article.url, article.doc)
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return None
+    return str(publish_date)[0:10] if publish_date else None
+
+
+def run_newsplease(htmlstring):
+    """try with newsplease
+
+    ``fetch_images=False`` skips image downloading/processing (and uses the
+    no-images newspaper extractor internally); the publication date is
+    unaffected and the call is ~2.5x faster.
+    """
+    try:
+        article = NewsPlease.from_html(htmlstring, url=None, fetch_images=False)
+        if article.date_publish is None:
+            return None
+        return convert_date(article.date_publish, "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+    except Exception as err:
+        print("Exception:", err)
+        return None
+
+
+def run_articledateextractor(htmlstring):
+    """try with articleDateExtractor"""
+    dateresult = extractArticlePublishedDate("", html=htmlstring)
+    if dateresult is None:
+        return None
+    return convert_date(dateresult, "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+
+
+def run_dateguesser(htmlstring):
+    """try with date_guesser"""
+    guess = guess_date(url="https://www.example.org/test/", html=htmlstring)
+    if guess.date is None:
+        return None
+    return convert_date(guess.date, "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+
+
+def run_goose(htmlstring):
+    """try with the goose algorithm"""
+    try:
+        article = G.extract(raw_html=htmlstring)
+    except (AttributeError, UnicodeDecodeError):
+        return None
+    if article.publish_date is None:
+        return None
+    try:
+        datematch = re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", article.publish_date)
+        return datematch[0]
+    # illogical result
+    except TypeError:
+        #    print(article.publish_date)
+        return None
+
+
+def evaluate_result(result, data):
+    """evaluate result contents"""
+    # template: tp, fp, tn, fn
+    datereference = data["date"]
+    if result is None:
+        return (0, 0, 1, 1) if datereference is None else (0, 0, 0, 1)
+    return (1, 0, 0, 0) if result == datereference else (0, 1, 0, 0)
+
+
+def f1_score(tp, fp, fn):
+    """Compute the F1-score from the confusion-matrix counts"""
+    return (2 * tp) / (2 * tp + fp + fn)
