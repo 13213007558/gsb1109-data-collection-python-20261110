@@ -1,5 +1,17 @@
 # Changelog
 
+### 0.15.0 (unreleased)
+
+Added `merge_records()` for source-aware merging of repeated observations of
+the same record. It merges field by field, never letting missing fields, empty
+values (`None` or empty strings) or empty lists overwrite a real value, and
+supports trusted-source, latest-observation and require-consistent strategies.
+The returned `MergeResult` keeps the adopted source of every field plus
+unresolved conflicts (including values that differ while sharing an
+observation timestamp), is deterministic regardless of input order, and can be
+returned as a conflict-carrying candidate record for the business layer to
+review.
+
 ### 0.14.0 (2026-10-29)
 
 Removed support for Python 3.9 and 3.10, and added support for Python 3.15

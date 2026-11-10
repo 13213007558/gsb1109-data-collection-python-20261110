@@ -148,6 +148,81 @@ but it doesn't traverse the object recursively converting nested items:
 
 ---
 
+## Source-aware merging
+
+The same logical record is often collected more than once, e.g. a product seen
+on a listing page, on its detail page and through a merchant API. A plain
+`dict.update()`-style merge is unsafe here: an observation that does not know a
+field, or reports it as empty, would overwrite a valid value collected
+elsewhere. `merge_records()` merges such observations field by field instead,
+recording the source of every adopted value and keeping every conflict it
+cannot resolve automatically.
+
+Each input record is one observation. Records may identify their source and
+observation time through the reserved `_source` and `_observed_at` keys
+(`datetime` objects or ISO-8601 strings); typed items can also provide
+per-field `source` and `observed_at` [field metadata](#metadata-support).
+
+```python
+>>> from itemadapter import MergeStrategy, merge_records
+>>> listing = {"_source": "listing", "_observed_at": "2026-11-10T08:00:00+00:00",
+...            "price": None, "name": "widget", "images": []}
+>>> detail = {"_source": "detail", "_observed_at": "2026-11-10T09:00:00+00:00",
+...           "price": "", "name": "widget", "images": ["a.png"]}
+>>> merchant = {"_source": "merchant", "_observed_at": "2026-11-10T10:00:00+00:00",
+...             "price": 100, "name": "widget", "images": ["b.png"]}
+>>> result = merge_records([listing, detail, merchant], strategy=MergeStrategy.LATEST)
+>>> result.record
+{'images': ['b.png'], 'name': 'widget', 'price': 100}
+>>> result.sources["price"].source
+'merchant'
+>>> result.has_conflicts
+False
+>>>
+```
+
+Missing fields, empty values (`None` or empty strings) and empty lists are
+three different kinds of emptiness. By default none of them overwrites a real
+value, and each kind has its own policy (`FieldPolicies` with
+`AbsencePolicy`, `EmptyValuePolicy` and `EmptyListPolicy`), configurable
+globally through `default_policies` or per field through `field_policies`.
+Empty lists can additionally be adopted with `EmptyListPolicy.ADOPT`.
+
+Three selection strategies are available through `MergeStrategy`:
+
+* `LATEST`: prefer the most recently observed value (the default).
+* `TRUSTED_SOURCE`: prefer the highest-priority source, configured with
+  `source_priority` (a list of source identifiers, most trusted first).
+* `REQUIRE_CONSISTENT`: adopt a value only when every non-empty observation
+  reports the same one, otherwise leave a conflict.
+
+Values observed at the same timestamp but differing from each other can never
+be resolved automatically: they always produce a `same_timestamp` conflict,
+regardless of the strategy.
+
+```python
+>>> left = {"_source": "a", "_observed_at": "2026-11-10T10:00:00+00:00", "price": 100}
+>>> right = {"_source": "b", "_observed_at": "2026-11-10T10:00:00+00:00", "price": 200}
+>>> result = merge_records([left, right])
+>>> result.has_conflicts
+True
+>>> result.conflicts["price"].reason
+'same_timestamp'
+>>> "price" in result.record
+False
+>>>
+```
+
+The returned `MergeResult` always contains the merged `record` (conflicting
+fields are left out), the adopted `Observation` (with its source and
+timestamp) of every field in `sources`, the unresolved `conflicts`, and a full
+per-field `decisions` trail. It can therefore be returned as a candidate
+record carrying conflicts, leaving the business layer to decide whether
+anything is written to storage. The merge is deterministic: the input order
+never changes the result.
+
+---
+
 ## API reference
 
 ### Built-in adapters
