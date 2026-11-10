@@ -12,8 +12,8 @@ __version__ = "1.11.0"
 
 import logging
 
-from .core import find_date
+from .core import RecordDate, find_date, find_dates
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__all__ = ["find_date"]
+__all__ = ["RecordDate", "find_date", "find_dates"]

@@ -23,12 +23,14 @@ from lxml import etree, html
 
 from htmldate.cli import cli_examine, main, parse_args, process_args
 from htmldate.core import (
+    RecordDate,
     compare_reference,
     date_candidates,
     examine_elements,
     examine_header,
     examine_text,
     find_date,
+    find_dates,
     search_normalized,
     search_page,
     search_pattern,
@@ -2365,3 +2367,112 @@ def test_deferred():
     </head><body></body></html>"""
     assert find_date(htmlstring, deferred_url_extractor=True) == "2017-09-01"
     assert find_date(htmlstring, deferred_url_extractor=False) == "2017-08-30"
+
+
+ANNOUNCEMENTS_HTML = """<html><head>
+<meta name="lastmod" content="2024-06-30T12:00:00"/>
+</head><body>
+<ul id="announcements">
+  <li class="announcement">
+    <span class="date">2024-06-01</span> <a href="/a1">公告一</a>
+  </li>
+  <li class="announcement">
+    <span class="date">2024-06-05</span> <a href="/a2">公告二</a>
+    <ul class="related">
+      <li class="announcement">
+        <span class="date">2023-12-31</span> <a href="/r1">推荐公告</a>
+      </li>
+    </ul>
+  </li>
+  <li class="announcement">
+    <span class="date">2024-06-10</span> <a href="/a3">公告三</a>
+  </li>
+  <li class="announcement">
+    <a href="/a4">缺日期的公告</a>
+  </li>
+</ul>
+</body></html>"""
+
+
+def test_find_dates():
+    "Test record-scoped date extraction over a list of announcements"
+    selector = "//li[@class='announcement']"
+
+    results = find_dates(ANNOUNCEMENTS_HTML, selector)
+    # input order preserved: three announcements, the nested recommendation
+    # (a record of its own), and the row without a date
+    assert [r.date for r in results] == [
+        "2024-06-01",
+        "2024-06-05",
+        "2023-12-31",
+        "2024-06-10",
+        None,
+    ]
+    # each result carries its evidence
+    assert all(r.status == "ok" for r in results[:4])
+    assert all(r.source == "element" for r in results[:4])
+    assert results[0].evidence == "2024-06-01"
+    # the nested recommendation list does not belong to the enclosing record
+    assert results[1].date == "2024-06-05"
+    assert results[1].evidence == "2024-06-05"
+    # the row without a date: no_date, and no borrowing from adjacent records
+    assert results[4].status == "no_date"
+    assert results[4].date is None
+    assert results[4].source is None
+
+    # explicit fallback rule: shared page metadata (site-wide update time)
+    results = find_dates(ANNOUNCEMENTS_HTML, selector, fallback="meta")
+    assert [r.date for r in results] == [
+        "2024-06-01",
+        "2024-06-05",
+        "2023-12-31",
+        "2024-06-10",
+        "2024-06-30",
+    ]
+    assert results[4].status == "ok"
+    assert results[4].source == "meta"
+    # records with their own date are unaffected by the fallback
+    assert all(r.source == "element" for r in results[:4])
+
+    # safeguards
+    assert find_dates(ANNOUNCEMENTS_HTML, selector, outputformat="not a format") == []
+    assert find_dates("<html></html>", selector) == []
+    assert find_dates(ANNOUNCEMENTS_HTML, "//table") == []
+    with pytest.raises(ValueError):
+        find_dates(ANNOUNCEMENTS_HTML, selector, fallback="unknown")
+
+
+def test_find_dates_status():
+    "Test the no_date/parse_error distinction and further record scopes"
+    # date-like but invalid content: parse failure, not a missing date
+    htmlstring = """<html><body><ul>
+    <li class="announcement"><span class="date">2024-13-45</span></li>
+    <li class="announcement"><span>no date here</span></li>
+    </ul></body></html>"""
+    results = find_dates(
+        htmlstring, "//li[@class='announcement']", extensive_search=False
+    )
+    assert [(r.status, r.date) for r in results] == [
+        ("parse_error", None),
+        ("no_date", None),
+    ]
+
+    # datetime attributes and bare text as evidence
+    htmlstring = """<html><body>
+    <div class="post"><time datetime="2024-03-01T10:00:00">March</time></div>
+    <div class="post">Veröffentlicht am 05.03.2024 um 10 Uhr</div>
+    </body></html>"""
+    results = find_dates(htmlstring, "//div[@class='post']")
+    assert [(r.date, r.source) for r in results] == [
+        ("2024-03-01", "attribute"),
+        ("2024-03-05", "text"),
+    ]
+    assert results[0].evidence == "2024-03-01T10:00:00"
+    assert results[1].evidence == "05.03.2024"
+
+    # lxml tree input and output format
+    tree = html.fromstring(
+        "<html><body><p class='x'>2024-06-01</p><p class='x'>2024-06-02</p></body></html>"
+    )
+    results = find_dates(tree, "//p[@class='x']", outputformat="%d/%m/%Y")
+    assert [r.date for r in results] == ["01/06/2024", "02/06/2024"]

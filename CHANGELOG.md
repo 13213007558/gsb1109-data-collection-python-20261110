@@ -1,6 +1,7 @@
 ## Changelog
 
 ## 1.x.x
+- extraction: add `find_dates` for record-scoped date extraction over content blocks (e.g. announcement lists), with per-record evidence, explicit `meta` fallback rule, and a no-date/parse-error distinction
 - fix: prefer JSON-LD dates over less reliable header fallbacks (#195)
 
 ## 1.11.0

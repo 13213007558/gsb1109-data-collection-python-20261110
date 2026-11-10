@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sized
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 
@@ -40,7 +41,7 @@ from .settings import (
     MAX_SEGMENT_LEN,
     MIN_SEGMENT_LEN,
 )
-from .utils import Extractor, clean_html, load_html, trim_text
+from .utils import Extractor, clean_html, load_html, remove_if_attached, trim_text
 from .validators import (
     REFERENCE_FORMAT,
     check_extracted_reference,
@@ -966,3 +967,157 @@ def find_date(
     converted = check_extracted_reference(reference, options)
     # return or search page HTML
     return converted or search_page(htmlstring, options)
+
+
+# loose numeric date shapes used to spot date candidates in record text
+RECORD_TEXT_PATTERN = re.compile(
+    rf"(?:{YEAR_RE}[/.-]{MONTH_RE}[/.-]{DAY_RE}|{DAY_RE}[/.-]{MONTH_RE}[/.-]{YEAR_RE})"
+)
+
+# explicit fallback rules for records without a date of their own
+FALLBACK_RULES = frozenset({"meta"})
+
+
+@dataclass(slots=True)
+class RecordDate:
+    "Date extraction result for a single record block."
+
+    date: str | None  # formatted date or None
+    status: str  # "ok", "no_date" (nothing date-like found) or "parse_error"
+    source: str | None  # "attribute", "element", "text" or "meta" (fallback)
+    evidence: str | None  # raw string the date was derived from
+
+
+def _record_scope(element: HtmlElement, selector: str) -> HtmlElement:
+    """Copy a record element and strip nested blocks matching the record
+    selector (e.g. embedded recommendation lists): they are records of their
+    own, not part of the enclosing one."""
+    scope = deepcopy(element)
+    # the copy is its own tree, so even an absolute selector only matches
+    # descendants here, never the record element itself
+    for nested in scope.xpath(selector):
+        remove_if_attached(nested)
+    return scope
+
+
+def _record_date(scope: HtmlElement, options: Extractor) -> RecordDate:
+    """Extract a date from a single record scope and track the evidence.
+    The search never leaves the scope, so adjacent records cannot contribute."""
+    saw_candidate = False
+    # structured dates in datetime attributes (e.g. <time datetime="...">)
+    for elem in scope.iter():
+        raw = elem.get("datetime")
+        if raw and len(raw) > 6:
+            saw_candidate = True
+            attempt = try_date_expr_opts(raw, options)
+            if attempt is not None:
+                return RecordDate(attempt, "ok", "attribute", trim_text(raw))
+    # elements marked as date carriers by class, id or itemprop
+    elements = [scope] if is_date_candidate(scope) else []
+    elements += date_candidates(scope, options.extensive)
+    for elem in elements:
+        for raw in (elem.text_content(), elem.get("title", "")):
+            raw = trim_text(raw)
+            if not raw:
+                continue
+            saw_candidate = True
+            attempt = examine_text(raw, options)
+            if attempt is not None:
+                return RecordDate(attempt, "ok", "element", raw)
+    # loose date patterns in the record text
+    text = trim_text(" ".join(scope.itertext()))
+    for match in RECORD_TEXT_PATTERN.finditer(text):
+        saw_candidate = True
+        attempt = try_date_expr_opts(match[0], options)
+        if attempt is not None:
+            return RecordDate(attempt, "ok", "text", match[0])
+    # distinguish "nothing date-like present" from "present but not parseable"
+    return RecordDate(None, "parse_error" if saw_candidate else "no_date", None, None)
+
+
+def find_dates(
+    htmlobject: bytes | str | HtmlElement,
+    selector: str,
+    extensive_search: bool = True,
+    original_date: bool = False,
+    outputformat: str = "%Y-%m-%d",
+    min_date: datetime | str | None = None,
+    max_date: datetime | str | None = None,
+    fallback: str | None = None,
+    verbose: bool = False,
+) -> list[RecordDate]:
+    """
+    Extract dates for a group of content blocks (e.g. announcement lists),
+    one result per record, in document order
+
+    :param htmlobject:
+        HTML document in text string form or LXML parsed tree
+    :type htmlobject: string or lxml tree
+    :param selector:
+        XPath expression selecting the record blocks within the document;
+        nested blocks matching the selector (e.g. recommendation lists) are
+        excluded from the enclosing record's scope
+    :type selector: string
+    :param extensive_search:
+        Activate pattern-based opportunistic text search
+    :type extensive_search: boolean
+    :param original_date:
+        Look for original date (e.g. publication date) instead of most recent
+        one (e.g. last modified, updated time)
+    :type original_date: boolean
+    :param outputformat:
+        Provide a valid datetime format for the returned strings
+        (see datetime.strftime())
+    :type outputformat: string
+    :param min_date:
+        Set the earliest acceptable date manually (ISO 8601 YMD format)
+    :type min_date: datetime, string
+    :param max_date:
+        Set the latest acceptable date manually (ISO 8601 YMD format)
+    :type max_date: datetime, string
+    :param fallback:
+        Explicit rule for records without a date of their own, currently only
+        "meta": use shared page metadata (e.g. a site-wide update time in the
+        header); dates are never borrowed from adjacent records
+    :type fallback: string
+    :param verbose:
+        Set verbosity level for debugging
+    :type verbose: boolean
+    :return: Returns a list of RecordDate results, one per record, each with
+        its status ("ok", "no_date" or "parse_error") and evidence
+    """
+
+    # init
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    if fallback is not None and fallback not in FALLBACK_RULES:
+        raise ValueError(f"unknown fallback rule: {fallback}")
+    if outputformat != "%Y-%m-%d" and not is_valid_format(outputformat):
+        return []
+
+    tree = load_html(htmlobject)
+    if tree is None:
+        return []
+
+    options = Extractor(
+        extensive_search,
+        get_max_date(max_date),
+        get_min_date(min_date),
+        original_date,
+        outputformat,
+    )
+
+    results = []
+    shared, shared_done = None, False
+    for record in tree.xpath(selector):
+        if not isinstance(record, HtmlElement):
+            continue
+        result = _record_date(_record_scope(record, selector), options)
+        # explicit fallback rule: shared page metadata, computed lazily once
+        if result.date is None and fallback == "meta":
+            if not shared_done:
+                shared, shared_done = examine_header(tree, options), True
+            if shared is not None:
+                result = RecordDate(shared, "ok", "meta", None)
+        results.append(result)
+    return results
