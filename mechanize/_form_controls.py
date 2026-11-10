@@ -48,6 +48,87 @@ class ItemCountError(ValueError):
     pass
 
 
+class FormRefreshError(ValueError):
+    """Base class for errors raised while refreshing a form.
+
+    See :meth:`mechanize.HTMLForm.refresh`.
+    """
+
+
+class ControlConflictError(FormRefreshError):
+    """A control edited in the old form cannot be mapped onto the new form.
+
+    Raised by :meth:`mechanize.HTMLForm.refresh` when a control that was
+    edited in the old form has been deleted, or when its type changed.
+
+    Public attributes:
+
+    :ivar name: name of the offending control (may be None for a nameless
+        control)
+    :ivar str old_type: control type in the old form
+    :ivar new_type: control type in the new form, or None if the control was
+        deleted
+    :ivar old_value: value the caller had set on the old control (a string for
+        scalar controls, a list of item names for list controls)
+    :ivar old_control: the control as it was in the old form
+    :ivar new_control: the matching control in the new form, or None if the
+        control was deleted
+    :ivar str reason: one of ``"deleted"`` or ``"type_changed"``
+    """
+
+    def __init__(self, name, old_type, new_type, old_value, old_control,
+                 new_control, reason):
+        self.name = name
+        self.old_type = old_type
+        self.new_type = new_type
+        self.old_value = old_value
+        self.old_control = old_control
+        self.new_control = new_control
+        self.reason = reason
+        if reason == "deleted":
+            message = ("control named %r (type %r) was edited in the old form "
+                       "but no longer exists in the new form" %
+                       (name, old_type))
+        else:
+            message = ("control named %r changed type from %r to %r; refusing "
+                       "to reapply the old value %r" %
+                       (name, old_type, new_type, old_value))
+        super(ControlConflictError, self).__init__(message)
+
+
+class ItemConflictError(FormRefreshError):
+    """An edited list value references items that no longer exist.
+
+    Raised by :meth:`mechanize.HTMLForm.refresh` when a list control (radio,
+    checkbox or select) was edited, but one or more of the selected item names
+    are missing from the equivalent control in the new form.
+
+    Public attributes:
+
+    :ivar name: name of the offending control
+    :ivar str control_type: type of the control (``"radio"``, ``"checkbox"``
+        or ``"select"``)
+    :ivar list old_value: selected item names in the old form
+    :ivar list missing: item names from old_value that are not offered by the
+        new control
+    :ivar old_control: the control as it was in the old form
+    :ivar new_control: the matching control in the new form
+    """
+
+    def __init__(self, name, control_type, old_value, missing, old_control,
+                 new_control):
+        self.name = name
+        self.control_type = control_type
+        self.old_value = list(old_value)
+        self.missing = list(missing)
+        self.old_control = old_control
+        self.new_control = new_control
+        message = ("%s control named %r no longer offers item(s) %r; old "
+                   "selected value was %r" %
+                   (control_type, name, self.missing, self.old_value))
+        super(ItemConflictError, self).__init__(message)
+
+
 _compress_re = re.compile(r"\s+")
 
 
@@ -1940,6 +2021,150 @@ class HTMLForm:
         for control in self.controls:
             control.fixup()
             control.form_encoding = self.form_encoding
+            # Remember the value the server supplied, so refresh() can tell
+            # which controls were actually edited by the caller afterwards.
+            if is_listcontrol(control):
+                control._initial_value = list(control.value)
+            else:
+                control._initial_value = control.value
+
+    def _refresh_edits(self):
+        """Return ``(control, original_value, current_value)`` for each edited
+        control.
+
+        A control counts as edited when its current value differs from the
+        value it held once parsing (``fixup``) was complete.  Mutable values
+        are copied so the result is safe to keep while ``new_form`` is
+        modified.
+
+        """
+        edits = []
+        for control in self.controls:
+            if is_listcontrol(control):
+                current_value = list(control.value)
+                original_value = getattr(control, "_initial_value", None)
+                if original_value is not None:
+                    original_value = list(original_value)
+                else:
+                    # Control added after fixup(): nothing is known about its
+                    # original state, so treat it as unedited.
+                    original_value = current_value
+            else:
+                current_value = control.value
+                original_value = getattr(
+                    control, "_initial_value", current_value)
+            if current_value != original_value:
+                edits.append((control, original_value, current_value))
+        return edits
+
+    def refresh(self, new_form):
+        """Reapply this form's user edits onto a freshly fetched form.
+
+        Use this when the page a form came from has been re-fetched (for
+        example because a hidden anti-CSRF token embedded in the page has
+        rotated).  ``new_form`` is the equivalent form parsed from the new
+        page; this method copies only the values the caller actually changed
+        in this (old) form onto the matching controls of ``new_form``.
+
+        Only controls whose current value differs from the value they had when
+        they were parsed count as edited.  Consequently:
+
+        * hidden values supplied by the server, including rotated tokens, are
+          never copied over -- the values present in ``new_form`` are kept;
+        * controls the caller never touched keep their fresh default values
+          from ``new_form``.
+
+        Neither form is replaced and this form is not modified, so after the
+        call the caller still holds both pages and can compare them.  The old
+        form's click request is never reused: submission must be done via
+        ``new_form.click()`` (or the browser's selected form), which encodes
+        the new hidden values.
+
+        Controls are matched by name and type.  If an edited control was
+        deleted in the new page, changed type, or (for list controls) no
+        longer offers one of the selected items, a
+        :class:`FormRefreshError` is raised instead of silently filling the
+        wrong value.  The exception objects expose both the old control/value
+        and the new control so the caller can inspect and resolve the
+        conflict.  When any conflict is found, ``new_form`` is left
+        untouched.
+
+        :arg mechanize.HTMLForm new_form: the same form as parsed from the
+            freshly fetched page
+        :raises TypeError: if ``new_form`` is not an :class:`HTMLForm`
+        :raises ControlConflictError: an edited control was deleted or changed
+            type
+        :raises ItemConflictError: an edited list control selected item(s)
+            that no longer exist
+        :returns: ``new_form``, with the old form's edits reapplied
+
+        """
+        if not isinstance(new_form, HTMLForm):
+            raise TypeError("new_form must be an HTMLForm instance")
+
+        new_controls_by_name = {}
+        for new_control in new_form.controls:
+            if new_control.name is not None:
+                new_controls_by_name.setdefault(new_control.name, []).append(
+                    new_control)
+
+        # First pass: work out every edit and validate it against the new
+        # form, so that new_form is left untouched when any conflict exists.
+        planned = []
+        conflicts = []
+        for old_control, original_value, current_value in self._refresh_edits():
+            if old_control.name is None:
+                # Nameless controls are never successful and cannot be
+                # reliably matched between pages, so they are left alone.
+                continue
+            candidates = new_controls_by_name.get(old_control.name, [])
+            matching = [control for control in candidates
+                        if control.type == old_control.type]
+            if not candidates:
+                conflicts.append(
+                    ControlConflictError(
+                        old_control.name, old_control.type, None,
+                        current_value, old_control, None, "deleted"))
+                continue
+            if not matching:
+                conflicts.append(
+                    ControlConflictError(
+                        old_control.name, old_control.type,
+                        candidates[0].type, current_value, old_control,
+                        candidates[0], "type_changed"))
+                continue
+
+            new_control = matching[0]
+            if is_listcontrol(old_control):
+                available = set(item.name for item in new_control.items)
+                missing = [value for value in current_value
+                           if value not in available]
+                if missing:
+                    conflicts.append(
+                        ItemConflictError(
+                            old_control.name, old_control.type, current_value,
+                            missing, old_control, new_control))
+                    continue
+
+            planned.append((new_control, current_value))
+
+        if conflicts:
+            if len(conflicts) == 1:
+                raise conflicts[0]
+            error = FormRefreshError(
+                "form refresh found %d conflicts: %s" %
+                (len(conflicts),
+                 "; ".join(str(conflict) for conflict in conflicts)))
+            # Keep every individual conflict accessible, each one exposing
+            # its old control/value and the corresponding new control.
+            error.conflicts = conflicts
+            raise error
+
+        # Second pass: all edits are applicable, so apply them.
+        for new_control, value in planned:
+            new_control.value = value
+
+        return new_form
 
 # ---------------------------------------------------
 

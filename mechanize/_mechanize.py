@@ -687,6 +687,87 @@ class Browser(UserAgentBase):
         request = self.form.click(*args, **kwds)
         return self._add_referer_header(request)
 
+    def refresh_form(self, url=None, html=None):
+        """Fetch a fresh copy of the current page and carry over form edits.
+
+        This covers the case where a form has been filled in but the page's
+        hidden server state (such as an anti-CSRF token) has since rotated.
+        A fresh copy of the page is loaded, the currently selected form is
+        matched against the new page, and the values actually edited by the
+        caller are reapplied via :meth:`mechanize.HTMLForm.refresh`.  Hidden
+        values and untouched controls keep their fresh values from the new
+        page.
+
+        The fresh page is always loaded with a new GET request (to ``url`` if
+        given, otherwise to the URL of the document being viewed).  The old
+        form's submission request is never re-sent.  Alternatively, pass the
+        new page markup in ``html`` to avoid any network access.
+
+        On success the matching form in the new page becomes the selected
+        form (see :meth:`select_form`) and is returned.  If an edited control
+        was deleted, changed type, or lost one of its options, a
+        :class:`mechanize.FormRefreshError` is raised; the new page remains
+        loaded and both the old form and the new form are accessible via the
+        exception and :meth:`forms()`.
+
+        :arg url: URL of the fresh page; defaults to the current document URL
+        :arg html: fresh page markup, if it should be supplied directly
+            instead of fetched
+        :raises BrowserStateError: if no form is selected
+        :raises FormNotFoundError: if the selected form cannot be found in
+            the new page
+
+        """
+        if self.form is None:
+            raise BrowserStateError("no form selected")
+        old_form = self.form
+        old_forms = list(self.forms())
+        old_index = old_forms.index(old_form)
+        was_global_form = old_form is self._factory.global_form
+        if old_form.name is not None:
+            same_named = [form for form in old_forms
+                          if form.name == old_form.name]
+            old_name_index = same_named.index(old_form)
+        else:
+            old_name_index = None
+
+        if html is not None:
+            if url is None:
+                url = self.geturl()
+            self.set_html(html, url)
+        else:
+            if url is None:
+                # Fresh GET of the document URL: never re-sends a previous
+                # form submission request.
+                url = self.geturl()
+            self.open(url)
+
+        if was_global_form:
+            new_form = self.global_form()
+        else:
+            new_forms = list(self.forms())
+            if old_form.name is not None:
+                same_named = [form for form in new_forms
+                              if form.name == old_form.name]
+                if len(same_named) > old_name_index:
+                    new_form = same_named[old_name_index]
+                elif same_named:
+                    new_form = same_named[0]
+                else:
+                    new_form = None
+            elif len(new_forms) > old_index:
+                new_form = new_forms[old_index]
+            else:
+                new_form = None
+            if new_form is None:
+                raise FormNotFoundError(
+                    "form named %r could not be found in the refreshed page"
+                    % old_form.name)
+
+        old_form.refresh(new_form)
+        self.form = new_form
+        return new_form
+
     def submit(self, *args, **kwds):
         """Submit current form.
 

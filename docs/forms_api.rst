@@ -66,3 +66,40 @@ represented by the various classes documented below.
     :inherited-members:
     :show-inheritance:
 
+Refreshing a stale form
+-----------------------
+
+A page can change between the time a form was fetched and the time it is
+submitted — for example, a hidden anti-CSRF token embedded in the page may
+have rotated, so submitting the old form fails.  Re-fetch the page and use
+:meth:`mechanize.HTMLForm.refresh` to carry over only the values the caller
+actually edited, while keeping the new page's hidden values and untouched
+defaults:
+
+.. code-block:: python
+
+    old_form = browser.form
+    browser.open(browser.geturl())          # fresh GET of the same page
+    browser.select_form(nr=0)
+    old_form.refresh(browser.form)          # carry edits onto the new form
+    browser.submit()                        # submits the new token
+
+The browser-level :meth:`mechanize.Browser.refresh_form` performs the fetch,
+form matching and reapplication in one call.  It always issues a new GET and
+never re-sends an old submission request.
+
+If an edited control was deleted, changed type, or no longer offers one of the
+selected options, the refresh fails loudly instead of silently filling the
+wrong value.  The exception objects expose both the old control and value and
+the new control so the conflict can be inspected and resolved.  On conflict the
+new form is left untouched.
+
+.. autoclass:: mechanize.FormRefreshError
+    :members:
+
+.. autoclass:: mechanize.ControlConflictError
+    :members:
+
+.. autoclass:: mechanize.ItemConflictError
+    :members:
+

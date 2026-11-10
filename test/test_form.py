@@ -3480,6 +3480,304 @@ Content-Type: application/octet-stream\r
 # }}}
 
 
+class FormRefreshTests(unittest.TestCase):  # {{{
+    base_uri = "http://example.com/form"
+
+    def parse(self, html):
+        return parse_file(BytesIO(html), self.base_uri)[0]
+
+    old_page = """\
+<form action="submit" method="POST">
+  <input type="hidden" name="token" value="OLD-TOKEN" />
+  <input type="text" name="name" value="" />
+  <input type="text" name="city" value="London" />
+  <input type="password" name="secret" value="" />
+  <textarea name="notes">default notes</textarea>
+  <select name="country">
+    <option value="uk" selected>UK</option>
+    <option value="us">US</option>
+  </select>
+  <select name="size" multiple>
+    <option value="s">S</option>
+    <option value="m">M</option>
+    <option value="l">L</option>
+  </select>
+  <input type="radio" name="colour" value="red" checked />
+  <input type="radio" name="colour" value="blue" />
+  <input type="checkbox" name="newsletter" value="on" />
+  <input type="submit" name="go" value="Send" />
+</form>
+"""
+
+    new_page = """\
+<form action="submit" method="POST">
+  <input type="hidden" name="token" value="NEW-TOKEN" />
+  <input type="text" name="name" value="" />
+  <input type="text" name="city" value="Berlin" />
+  <input type="password" name="secret" value="" />
+  <textarea name="notes">default notes</textarea>
+  <select name="country">
+    <option value="uk" selected>UK</option>
+    <option value="us">US</option>
+  </select>
+  <select name="size" multiple>
+    <option value="s">S</option>
+    <option value="m">M</option>
+    <option value="l">L</option>
+  </select>
+  <input type="radio" name="colour" value="red" checked />
+  <input type="radio" name="colour" value="blue" />
+  <input type="checkbox" name="newsletter" value="on" />
+  <input type="submit" name="go" value="Send" />
+</form>
+"""
+
+    def fill_old_page(self, form):
+        form["name"] = "Alice"
+        form["secret"] = "s3cret"
+        form["notes"] = "please call after 6"
+        form["country"] = ["us"]
+        form["size"] = ["m", "l"]
+        form["colour"] = ["blue"]
+        form["newsletter"] = ["on"]
+        # city is deliberately left untouched
+
+    def test_refresh_carries_edits_but_keeps_new_hidden_and_defaults(self):
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(self.new_page)
+        self.fill_old_page(old_form)
+
+        result = old_form.refresh(new_form)
+
+        self.assertIs(result, new_form)
+
+        # Edits made on the old page survive on the matching new controls.
+        self.assertEqual(new_form["name"], "Alice")
+        self.assertEqual(new_form["secret"], "s3cret")
+        self.assertEqual(new_form["notes"], "please call after 6")
+        self.assertEqual(new_form["country"], ["us"])
+        self.assertEqual(new_form["size"], ["m", "l"])
+        self.assertEqual(new_form["colour"], ["blue"])
+        self.assertEqual(new_form["newsletter"], ["on"])
+
+        # Rotated hidden token is not copied from the old page.
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+        # An untouched control keeps the new page's default, even though the
+        # default changed between the two pages.
+        self.assertEqual(new_form["city"], "Berlin")
+
+        # The old page is retained unchanged for inspection.
+        self.assertEqual(old_form["token"], "OLD-TOKEN")
+        self.assertEqual(old_form["name"], "Alice")
+        self.assertEqual(old_form["city"], "London")
+
+    def test_refresh_submission_uses_new_token_and_not_old_request(self):
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(self.new_page)
+        self.fill_old_page(old_form)
+        old_form.refresh(new_form)
+
+        old_pairs = dict(old_form.click_pairs())
+        new_pairs = dict(new_form.click_pairs())
+        self.assertEqual(old_pairs["token"], "OLD-TOKEN")
+        self.assertEqual(new_pairs["token"], "NEW-TOKEN")
+        self.assertNotIn("OLD-TOKEN",
+                         [value for key, value in new_form.click_pairs()])
+        self.assertEqual(new_pairs["name"], "Alice")
+        self.assertEqual(new_pairs["country"], "us")
+
+        old_request = old_form.click()
+        new_request = new_form.click()
+        self.assertIsNot(old_request, new_request)
+        self.assertIn("NEW-TOKEN", new_request.get_data())
+        self.assertNotIn("OLD-TOKEN", new_request.get_data())
+        self.assertIn("OLD-TOKEN", old_request.get_data())
+
+    def test_refresh_without_edits_changes_nothing(self):
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(self.new_page)
+        returned = old_form.refresh(new_form)
+        self.assertIs(returned, new_form)
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+        self.assertEqual(new_form["city"], "Berlin")
+        self.assertEqual(new_form["name"], "")
+        self.assertEqual(new_form["country"], ["uk"])
+        self.assertEqual(new_form["size"], [])
+        self.assertEqual(new_form["newsletter"], [])
+
+    def test_edit_back_to_original_value_is_not_an_edit(self):
+        # The new page changes the default country; because the caller ended
+        # up back on the old default, no edit is carried over and the new
+        # default wins.
+        new_page = self.new_page.replace(
+            '<option value="uk" selected>UK</option>',
+            '<option value="uk">UK</option>').replace(
+            '<option value="us">US</option>',
+            '<option value="us" selected>US</option>')
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["country"] = ["us"]
+        old_form["country"] = ["uk"]
+        old_form.refresh(new_form)
+        self.assertEqual(new_form["country"], ["us"])
+
+    def test_refresh_reports_deleted_control(self):
+        new_page = self.new_page.replace(
+            '<input type="text" name="name" value="" />\n', "")
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["name"] = "Alice"
+
+        with self.assertRaises(mechanize.ControlConflictError) as cm:
+            old_form.refresh(new_form)
+        conflict = cm.exception
+        self.assertEqual(conflict.reason, "deleted")
+        self.assertEqual(conflict.name, "name")
+        self.assertEqual(conflict.old_type, "text")
+        self.assertIsNone(conflict.new_type)
+        self.assertEqual(conflict.old_value, "Alice")
+        self.assertIs(conflict.old_control, old_form.find_control("name"))
+        self.assertIsNone(conflict.new_control)
+        # The new form must not be partially filled.
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+        self.assertEqual(new_form["city"], "Berlin")
+
+    def test_refresh_reports_type_change(self):
+        new_page = self.new_page.replace(
+            '<input type="text" name="name" value="" />',
+            '<select name="name"><option value="a">a</option></select>')
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["name"] = "Alice"
+
+        with self.assertRaises(mechanize.ControlConflictError) as cm:
+            old_form.refresh(new_form)
+        conflict = cm.exception
+        self.assertEqual(conflict.reason, "type_changed")
+        self.assertEqual(conflict.old_type, "text")
+        self.assertEqual(conflict.new_type, "select")
+        self.assertEqual(conflict.old_value, "Alice")
+        self.assertIs(conflict.new_control, new_form.find_control("name"))
+        self.assertEqual(new_form.find_control("name").value, ["a"])
+
+    def test_refresh_reports_missing_option(self):
+        new_page = self.new_page.replace(
+            '<option value="l">L</option>\n', "")
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["size"] = ["m", "l"]
+
+        with self.assertRaises(mechanize.ItemConflictError) as cm:
+            old_form.refresh(new_form)
+        conflict = cm.exception
+        self.assertEqual(conflict.name, "size")
+        self.assertEqual(conflict.control_type, "select")
+        self.assertEqual(conflict.old_value, ["m", "l"])
+        self.assertEqual(conflict.missing, ["l"])
+        self.assertIs(conflict.old_control, old_form.find_control("size"))
+        self.assertIs(conflict.new_control, new_form.find_control("size"))
+        # Caller can inspect what the new control still offers.
+        self.assertEqual(
+            [item.name for item in conflict.new_control.items], ["s", "m"])
+        # Nothing was applied: the valid sibling edit is also held back.
+        self.assertEqual(new_form["size"], [])
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+
+    def test_refresh_reports_missing_radio_option(self):
+        new_page = self.new_page.replace(
+            '<input type="radio" name="colour" value="blue" />\n', "")
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["colour"] = ["blue"]
+        with self.assertRaises(mechanize.ItemConflictError) as cm:
+            old_form.refresh(new_form)
+        self.assertEqual(cm.exception.missing, ["blue"])
+
+    def test_refresh_collects_multiple_conflicts(self):
+        new_page = self.new_page.replace(
+            '<input type="text" name="name" value="" />\n', "").replace(
+            '<option value="l">L</option>\n', "")
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(new_page)
+        old_form["name"] = "Alice"
+        old_form["size"] = ["l"]
+
+        with self.assertRaises(mechanize.FormRefreshError) as cm:
+            old_form.refresh(new_form)
+        error = cm.exception
+        self.assertEqual(len(error.conflicts), 2)
+        kinds = sorted(type(conflict).__name__ for conflict in error.conflicts)
+        self.assertEqual(
+            kinds, ["ControlConflictError", "ItemConflictError"])
+        # Atomic: the new form is completely untouched.
+        self.assertEqual(new_form["size"], [])
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+
+    def test_refresh_rejects_non_form(self):
+        form = self.parse(self.old_page)
+        self.assertRaises(TypeError, form.refresh, object())
+
+    def test_refresh_deselecting_default_is_an_edit(self):
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(self.new_page)
+        # colour defaults to red; explicitly clearing it is an edit.
+        old_form["colour"] = []
+        old_form.refresh(new_form)
+        self.assertEqual(new_form["colour"], [])
+
+    def test_refresh_hidden_value_never_overwritten(self):
+        old_form = self.parse(self.old_page)
+        new_form = self.parse(self.new_page)
+        # Even with other edits present, the hidden value stays server-owned.
+        old_form["name"] = "Bob"
+        old_form.refresh(new_form)
+        self.assertEqual(new_form["token"], "NEW-TOKEN")
+        self.assertEqual(new_form["name"], "Bob")
+
+    def test_refresh_matches_by_name_and_type(self):
+        old_html = """\
+<form>
+  <input type="hidden" name="x" value="old-hidden" />
+  <input type="text" name="x" value="" />
+</form>
+"""
+        new_html = """\
+<form>
+  <input type="hidden" name="x" value="new-hidden" />
+  <input type="text" name="x" value="" />
+</form>
+"""
+        old_form = self.parse(old_html)
+        new_form = self.parse(new_html)
+        old_form.find_control("x", type="text").value = "edited"
+        old_form.refresh(new_form)
+        self.assertEqual(
+            new_form.find_control("x", type="hidden").value, "new-hidden")
+        self.assertEqual(
+            new_form.find_control("x", type="text").value, "edited")
+
+    def test_refresh_ignores_edits_to_nameless_controls(self):
+        # Nameless controls are never successful and cannot be matched by
+        # name, so edits to them must not produce spurious conflicts.
+        old_form = self.parse(
+            '<form><input type="text" value="x" /></form>')
+        new_form = self.parse(
+            '<form><input type="text" value="y" /></form>')
+        old_form.find_control(nr=0).value = "changed"
+        old_form.refresh(new_form)
+        self.assertEqual(new_form.find_control(nr=0).value, "y")
+
+    def test_refresh_tolerates_control_added_after_fixup(self):
+        old_form = mechanize.HTMLForm("http://example.com/")
+        old_form.new_control("text", "manual", {"value": "d"})
+        new_form = mechanize.HTMLForm("http://example.com/")
+        new_form.new_control("text", "manual", {"value": "d2"})
+        # No fixup() was called, hence no recorded initial value: the control
+        # must be treated as unedited rather than crashing.
+        old_form.refresh(new_form)
+        self.assertEqual(new_form["manual"], "d2")
+
+
 class MutationTests(unittest.TestCase):  # {{{
     def test_add_textfield(self):
         form = first_form('<input type="text" name="foo" value="bar" />')

@@ -1102,6 +1102,148 @@ class HttplibTests(mechanize._testcase.TestCase):
         self.assertEqual(str(br.form.find_control(name="a").value), 'b')
 
 
+class FormRefreshBrowserTests(TestCase):
+    old_html = """\
+<html><body>
+<form name="edit" action="submit" method="POST">
+  <input type="hidden" name="token" value="OLD-TOKEN" />
+  <input type="text" name="name" value="" />
+  <input type="text" name="city" value="London" />
+  <select name="country">
+    <option value="uk" selected>UK</option>
+    <option value="us">US</option>
+  </select>
+  <input type="submit" name="go" value="Send" />
+</form>
+</body></html>
+"""
+
+    new_html = """\
+<html><body>
+<form name="edit" action="submit" method="POST">
+  <input type="hidden" name="token" value="NEW-TOKEN" />
+  <input type="text" name="name" value="" />
+  <input type="text" name="city" value="Berlin" />
+  <select name="country">
+    <option value="uk" selected>UK</option>
+    <option value="us">US</option>
+  </select>
+  <input type="submit" name="go" value="Send" />
+</form>
+</body></html>
+"""
+
+    def test_refresh_form_with_supplied_html(self):
+        b = TestBrowser()
+        b.set_html(self.old_html)
+        b.select_form("edit")
+        b["name"] = "Alice"
+        b["country"] = ["us"]
+        old_form = b.form
+
+        refreshed = b.refresh_form(html=self.new_html)
+
+        self.assertIs(refreshed, b.form)
+        self.assertIsNot(b.form, old_form)
+        # User intent carried over.
+        self.assertEqual(b["name"], "Alice")
+        self.assertEqual(b["country"], ["us"])
+        # Rotated token and untouched default come from the new page.
+        self.assertEqual(b["token"], "NEW-TOKEN")
+        self.assertEqual(b["city"], "Berlin")
+        # The old page/form remains available for inspection.
+        self.assertEqual(old_form["token"], "OLD-TOKEN")
+        self.assertEqual(old_form["name"], "Alice")
+
+    def test_refresh_form_requires_selected_form(self):
+        b = TestBrowser()
+        b.set_html(self.old_html)
+        self.assertRaises(mechanize.BrowserStateError, b.refresh_form,
+                          html=self.new_html)
+
+    def test_refresh_form_conflict_exposes_old_value_and_new_control(self):
+        new_html = self.new_html.replace(
+            '<input type="text" name="name" value="" />\n', "")
+        b = TestBrowser()
+        b.set_html(self.old_html)
+        b.select_form("edit")
+        b["name"] = "Alice"
+        old_form = b.form
+
+        with self.assertRaises(mechanize.ControlConflictError) as cm:
+            b.refresh_form(html=new_html)
+
+        conflict = cm.exception
+        self.assertEqual(conflict.reason, "deleted")
+        self.assertEqual(conflict.old_value, "Alice")
+        self.assertIs(conflict.old_control, old_form.find_control("name"))
+        self.assertIsNone(conflict.new_control)
+        # The new page stays loaded so the caller can inspect its controls.
+        new_forms = list(b.forms())
+        self.assertEqual(new_forms[0]["token"], "NEW-TOKEN")
+        self.assertRaises(mechanize.ControlNotFoundError,
+                          new_forms[0].find_control, "name")
+        # The old form is still intact for comparison.
+        self.assertEqual(old_form["name"], "Alice")
+
+    def test_refresh_form_uses_fresh_get_and_never_resends_post(self):
+        seen_requests = []
+
+        class TestHttpHandler(mechanize.BaseHandler):
+            def http_open(self, request):
+                seen_requests.append(request)
+                data = (FormRefreshBrowserTests.new_html
+                        if len(seen_requests) > 1
+                        else FormRefreshBrowserTests.old_html)
+                return mechanize._response.test_html_response(
+                    data=data, url=request.get_full_url())
+
+        class HttpBrowser(TestBrowser2):
+            handler_classes = TestBrowser2.handler_classes.copy()
+            handler_classes["http"] = TestHttpHandler
+            default_schemes = ["http"]
+
+        b = HttpBrowser()
+        b.open("http://example.com/form")
+        b.select_form("edit")
+        b["name"] = "Alice"
+
+        refreshed = b.refresh_form()
+
+        self.assertIs(refreshed, b.form)
+        self.assertEqual(len(seen_requests), 2)
+        refresh_request = seen_requests[1]
+        # The refresh is a brand-new GET to the document URL, not a replay of
+        # the old POST submission.
+        self.assertEqual(refresh_request.get_method(), "GET")
+        self.assertIsNone(refresh_request.get_data())
+        self.assertEqual(
+            refresh_request.get_full_url(), "http://example.com/form")
+        self.assertEqual(b["token"], "NEW-TOKEN")
+        self.assertEqual(b["name"], "Alice")
+
+        submit_request = b.click()
+        self.assertIn("NEW-TOKEN", submit_request.get_data())
+        self.assertNotIn("OLD-TOKEN", submit_request.get_data())
+
+    def test_refresh_form_raises_when_form_disappears(self):
+        replacement_html = """\
+<html><body>
+<form name="other">
+  <input type="text" name="only" value="x" />
+</form>
+</body></html>
+"""
+        b = TestBrowser()
+        b.set_html(self.old_html)
+        b.select_form("edit")
+        b["name"] = "Alice"
+        self.assertRaises(mechanize.FormNotFoundError, b.refresh_form,
+                          html=replacement_html)
+        # The fresh page remains loaded after the failure.
+        self.assertEqual(list(b.forms())[0].name, "other")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

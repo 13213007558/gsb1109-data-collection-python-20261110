@@ -10,8 +10,9 @@ from ._clientcookie import (Cookie, CookieJar, CookiePolicy,
                             effective_request_host, lwp_cookie_str)
 # forms
 from ._form_controls import (
-    AmbiguityError, CheckboxControl, Control, ControlNotFoundError,
-    FileControl, HiddenControl, HTMLForm, IgnoreControl, ImageControl, Item,
+    AmbiguityError, CheckboxControl, Control, ControlConflictError,
+    ControlNotFoundError, FileControl, FormRefreshError, HiddenControl,
+    HTMLForm, IgnoreControl, ImageControl, Item, ItemConflictError,
     ItemCountError, ItemNotFoundError, Label, ListControl, LocateError,
     Missing, PasswordControl, RadioControl, ScalarControl, SelectControl,
     SubmitButtonControl, SubmitControl, TextareaControl, TextControl)
@@ -128,7 +129,10 @@ __all__ = [
 
     # ClientForm API
     'AmbiguityError',
+    'ControlConflictError',
     'ControlNotFoundError',
+    'FormRefreshError',
+    'ItemConflictError',
     'ItemCountError',
     'ItemNotFoundError',
     'LocateError',
