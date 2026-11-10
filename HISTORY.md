@@ -1,6 +1,14 @@
 # History / Changelog
 
 
+## Unreleased
+
+- New `courlan.scope` module: reusable crawl scope rules (`Scope`, `ScopeRule`)
+  with exact hosts, optional subdomains, ports and path-segment prefixes,
+  excludable subtrees, canonical IDN/IPv6/trailing-dot handling, and upfront
+  rule validation
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)

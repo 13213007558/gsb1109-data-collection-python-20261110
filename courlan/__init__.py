@@ -21,6 +21,7 @@ from .filters import (
     validate_url,
 )
 from .sampling import sample_urls
+from .scope import Scope, ScopeMatch, ScopeRule, ScopeRuleError
 from .urlstore import UrlStore, load_store
 from .urlutils import (
     extract_domain,
@@ -46,6 +47,10 @@ __all__ = [
     "lang_filter",
     "validate_url",
     "sample_urls",
+    "Scope",
+    "ScopeMatch",
+    "ScopeRule",
+    "ScopeRuleError",
     "UrlStore",
     "load_store",
     "extract_domain",

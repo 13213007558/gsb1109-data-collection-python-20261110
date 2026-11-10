@@ -12,6 +12,7 @@ clean
 urlutils
 urlstore
 sampling
+scope
 settings
 ```
 
