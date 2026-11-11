@@ -53,6 +53,9 @@ $ htmldate -u http://blog.python.org/2016/12/python-360-is-now-available.html
 -   Customizable output: Any date format (defaults to [ISO 8601
     YMD](https://en.wikipedia.org/wiki/ISO_8601)).
 -   Detection of both original and updated dates.
+-   Call-level source policies to allow, disable or require the structured data,
+    meta, `time`, content and URL channels, with an audit of adopted and
+    excluded sources.
 -   Multilingual.
 -   Compatible with Python 3.10 and later.
 

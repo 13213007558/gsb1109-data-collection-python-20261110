@@ -7,10 +7,11 @@ import logging
 import re
 
 from collections import Counter
-from collections.abc import Callable, Sized
+from collections.abc import Callable, Mapping, Sized
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import partial
+from typing import Any
 
 from lxml.etree import Element
 from lxml.html import HtmlElement, tostring
@@ -40,6 +41,7 @@ from .settings import (
     MAX_SEGMENT_LEN,
     MIN_SEGMENT_LEN,
 )
+from .sources import Source, SourceEvidence, SourcePolicy
 from .utils import Extractor, clean_html, load_html, trim_text
 from .validators import (
     REFERENCE_FORMAT,
@@ -338,6 +340,12 @@ def examine_header_dates(
 
     """
     headerdate, reserve = None, None
+    if not options.policy.permits(Source.META):
+        if options.evidence is not None:
+            options.evidence.note_excluded(
+                Source.META, options.policy.block_reason(Source.META)
+            )
+        return headerdate, reserve
     tryfunc = partial(try_date_expr_opts, options=options)
     # loop through all meta elements
     for elem in tree.iterfind(".//meta"):
@@ -350,7 +358,12 @@ def examine_header_dates(
             attribute = elem.get("name", "").lower()
             # url
             if attribute == "og:url":
-                reserve = extract_url_date(content, options) or reserve
+                # the date comes from the URL channel, so honor its policy
+                if options.policy.permits(Source.URL):
+                    url_candidate = extract_url_date(content, options)
+                    if url_candidate is not None:
+                        reserve = url_candidate
+                        _record(options, Source.URL, url_candidate)
             # date
             elif attribute in DATE_ATTRIBUTES:
                 LOGGER.debug("examining meta name: %s", logstring(elem))
@@ -517,6 +530,12 @@ def examine_abbr_elements(
     options: Extractor,
 ) -> str | None:
     """Scan the page for abbr elements and check if their content contains an eligible date"""
+    if not options.policy.permits(Source.CONTENT):
+        if options.evidence is not None:
+            options.evidence.note_excluded(
+                Source.CONTENT, options.policy.block_reason(Source.CONTENT)
+            )
+        return None
     elements = tree.findall(".//abbr")
     if has_plausible_candidates(elements):
         reference: datetime | None = None
@@ -564,6 +583,12 @@ def examine_time_elements(
     options: Extractor,
 ) -> str | None:
     """Scan the page for time elements and check if their content contains an eligible date"""
+    if not options.policy.permits(Source.TIME):
+        if options.evidence is not None:
+            options.evidence.note_excluded(
+                Source.TIME, options.policy.block_reason(Source.TIME)
+            )
+        return None
     elements = tree.findall(".//time")
     if has_plausible_candidates(elements):
         # scan all the tags and look for the newest one
@@ -809,6 +834,59 @@ def search_page(htmlstring: str, options: Extractor) -> str | None:
     return None
 
 
+def _record(options: Extractor, source: Source, value: str | None) -> None:
+    "Register a value produced by a permitted channel for the audit trail."
+    if value is not None and options.evidence is not None:
+        options.evidence.record(source, value)
+
+
+def _coerce_policy(policy: SourcePolicy | Mapping[str, Any] | str | None) -> SourcePolicy:
+    "Normalize the source_policy argument into a SourcePolicy instance."
+    if policy is None:
+        return SourcePolicy()
+    if isinstance(policy, SourcePolicy):
+        return policy
+    if isinstance(policy, Mapping):
+        return SourcePolicy.from_mapping(policy)
+    if isinstance(policy, str):
+        return SourcePolicy.from_json(policy)
+    raise TypeError(
+        "source_policy must be a SourcePolicy, a mapping of source lists or a JSON string"
+    )
+
+
+# markup tied to a dedicated channel, removed from the content search tree when
+# that channel is disabled so generic text regexes cannot resurrect its date
+_POLICY_XPATHS = {
+    # og:url/og:image belong to the URL channel, so keep them when only meta is off
+    Source.META: (
+        './/meta[not(@property="og:url" or @property="og:image")]',
+    ),
+    Source.STRUCTURED: (
+        './/script[@type="application/ld+json"]',
+        './/script[@type="application/settings+json"]',
+    ),
+    Source.TIME: (".//time",),
+    Source.URL: (
+        './/link[@rel="canonical"]',
+        './/meta[@property="og:url"]',
+        './/meta[@property="og:image"]',
+    ),
+}
+
+
+def strip_disabled_sources(tree: HtmlElement, policy: SourcePolicy) -> None:
+    """Remove markup belonging to disabled channels from the content search
+    tree. The dedicated extractors already ran (or were gated) on the original
+    tree; this only stops generic body regexes from reading the same literals."""
+    for source, expressions in _POLICY_XPATHS.items():
+        if policy.permits(source):
+            continue
+        for expression in expressions:
+            for element in tree.xpath(expression):
+                element.drop_tree()
+
+
 def find_date(
     htmlobject: bytes | str | HtmlElement,
     extensive_search: bool = True,
@@ -819,7 +897,9 @@ def find_date(
     min_date: datetime | str | None = None,
     max_date: datetime | str | None = None,
     deferred_url_extractor: bool = False,
-) -> str | None:
+    source_policy: SourcePolicy | Mapping[str, Any] | str | None = None,
+    explain: bool = False,
+) -> str | None | dict[str, Any]:
     """
     Extract dates from HTML documents using markup analysis and text patterns
 
@@ -855,7 +935,21 @@ def find_date(
         Use url extractor as backup only to prioritize full expressions,
         e.g. of the type `%Y-%m-%d %H:%M:%S`
     :type deferred_url_extractor: boolean
-    :return: Returns a valid date expression as a string, or None
+    :param source_policy:
+        Call-level policy deciding which evidence channels (``structured``,
+        ``meta``, ``time``, ``content`` and ``url``) may, must not or must
+        provide the date. Accepts a :class:`~htmldate.sources.SourcePolicy`,
+        a mapping of source lists (``allow``/``disable``/``require``) or a
+        JSON string. Disabled channels are never queried, and required
+        channels must corroborate the result; otherwise ``None`` is returned.
+    :type source_policy: SourcePolicy, dict or string
+    :param explain:
+        Return an audit dictionary instead of a plain date, listing the
+        adopted channels, the values considered, the excluded channels and
+        any requirement that could not be satisfied.
+    :type explain: boolean
+    :return: Returns a valid date expression as a string, or None (or an
+        explanation dictionary when ``explain`` is set)
     """
 
     # init
@@ -870,6 +964,10 @@ def find_date(
     if outputformat != "%Y-%m-%d" and not is_valid_format(outputformat):
         return None
 
+    # per-call policy and evidence bookkeeping: no module-level state is touched
+    policy = _coerce_policy(source_policy)
+    evidence = SourceEvidence()
+
     # define options and time boundaries
     options = Extractor(
         extensive_search,
@@ -877,7 +975,50 @@ def find_date(
         get_min_date(min_date),
         original_date,
         outputformat,
+        policy,
+        evidence,
     )
+
+    # when corroboration is required, every channel is queried and its value
+    # adopted; otherwise the historical first-match short-circuit is preserved
+    corroborating = bool(policy.require)
+
+    def _short_circuit(
+        source: Source, value: str | None
+    ) -> str | dict[str, Any] | None:
+        "Return early in default mode, or merely gather evidence when requiring."
+        if value is None:
+            return None
+        if corroborating:
+            evidence.adopt(source, value)
+            return None
+        return _finish(options, source, value, explain)
+
+    def _finalize_corroboration() -> str | dict[str, Any] | None:
+        "All required channels must be present and agree on one date."
+        selected = evidence.selected
+        missing = [source for source in policy.require if source not in selected]
+        if missing:
+            LOGGER.debug(
+                "insufficient evidence, missing required source(s): %s",
+                ", ".join(source.value for source in missing),
+            )
+            return _unknown(options, explain)
+        required = {source: selected[source] for source in policy.require}
+        distinct = set(required.values())
+        if len(distinct) > 1:
+            disagreement = [
+                {"source": source.value, "date": date}
+                for source, date in required.items()
+            ]
+            LOGGER.debug("required sources disagree: %s", disagreement)
+            if explain:
+                return evidence.explanation(policy, None, disagreement)
+            return None
+        value = next(iter(distinct))
+        if explain:
+            return evidence.explanation(policy, value)
+        return value
 
     # URL
     if url is None:
@@ -886,10 +1027,16 @@ def find_date(
         if urlelem is not None:
             url = urlelem.get("href")
 
-    # direct processing of URL info
-    url_result = extract_url_date(url, options)
+    # direct processing of URL info (skipped entirely when the channel is off)
+    url_permitted = policy.permits(Source.URL)
+    url_result = extract_url_date(url, options) if url_permitted else None
+    _record(options, Source.URL, url_result)
+    if not url_permitted:
+        evidence.note_excluded(Source.URL, policy.block_reason(Source.URL))
     if url_result is not None and not deferred_url_extractor:
-        return url_result
+        outcome = _short_circuit(Source.URL, url_result)
+        if outcome is not None:
+            return outcome
 
     # first try header
     # then try to use JSON data
@@ -897,21 +1044,39 @@ def find_date(
     # date when the original one was requested): only use it if JSON-LD, which
     # can carry the requested date explicitly, has nothing to offer
     header_result, header_reserve = examine_header_dates(tree, options)
-    result = header_result or json_search(tree, options) or header_reserve
-    if result is not None:
-        return result
+    _record(options, Source.META, header_result)
+    _record(options, Source.META, header_reserve)
+    if policy.permits(Source.STRUCTURED):
+        json_result = json_search(tree, options)
+        _record(options, Source.STRUCTURED, json_result)
+    else:
+        json_result = None
+        evidence.note_excluded(
+            Source.STRUCTURED, policy.block_reason(Source.STRUCTURED)
+        )
+    outcome = (
+        _short_circuit(Source.META, header_result)
+        or _short_circuit(Source.STRUCTURED, json_result)
+        or _short_circuit(Source.META, header_reserve)
+    )
+    if outcome is not None:
+        return outcome
 
     # deferred processing of URL info (may be moved even further down if necessary)
     if deferred_url_extractor and url_result is not None:
-        return url_result
+        outcome = _short_circuit(Source.URL, url_result)
+        if outcome is not None:
+            return outcome
 
     # try abbr elements
     abbr_result = examine_abbr_elements(
         tree,
         options,
     )
-    if abbr_result is not None:
-        return abbr_result
+    _record(options, Source.CONTENT, abbr_result)
+    outcome = _short_circuit(Source.CONTENT, abbr_result)
+    if outcome is not None:
+        return outcome
 
     # first, prune tree
     # only copy the tree if the caller passed one in: when we parsed it ourselves
@@ -927,42 +1092,115 @@ def find_date(
         search_tree = pruning_tree
         LOGGER.error("lxml cleaner error")
 
-    result = (
-        examine_elements(date_candidates(search_tree, extensive_search), options)
-        or examine_elements(search_tree.xpath(".//title|.//h1"), options)
-        or examine_time_elements(search_tree, options)
+    # purge disabled-channel markup so generic content scans cannot read dates
+    # a disabled dedicated channel would have provided (no-op with the open policy)
+    strip_disabled_sources(search_tree, policy)
+
+    content_permitted = policy.permits(Source.CONTENT)
+    if content_permitted:
+        content_result = (
+            examine_elements(date_candidates(search_tree, extensive_search), options)
+            or examine_elements(search_tree.xpath(".//title|.//h1"), options)
+        )
+        _record(options, Source.CONTENT, content_result)
+    else:
+        content_result = None
+        evidence.note_excluded(
+            Source.CONTENT, policy.block_reason(Source.CONTENT)
+        )
+    time_result = examine_time_elements(search_tree, options)
+    _record(options, Source.TIME, time_result)
+    outcome = (
+        _short_circuit(Source.CONTENT, content_result)
+        or _short_circuit(Source.TIME, time_result)
     )
-    if result is not None:
-        return result
+    if outcome is not None:
+        return outcome
 
     htmlstring = serialize(search_tree)
 
     # date regex timestamp rescue
-    # try image elements
+    # try image elements (their date is read from an og:image URL)
     # precise patterns and idiosyncrasies
-    result = (
-        pattern_search(htmlstring, TIMESTAMP_PATTERN, options)
-        or img_search(search_tree, options)
-        or idiosyncrasies_search(htmlstring, options)
+    image_result = img_search(search_tree, options) if url_permitted else None
+    _record(options, Source.URL, image_result)
+    if content_permitted:
+        pattern_result = pattern_search(htmlstring, TIMESTAMP_PATTERN, options)
+        idio_result = idiosyncrasies_search(htmlstring, options)
+    else:
+        pattern_result = idio_result = None
+    _record(options, Source.CONTENT, pattern_result)
+    _record(options, Source.CONTENT, idio_result)
+    outcome = (
+        _short_circuit(Source.CONTENT, pattern_result)
+        or _short_circuit(Source.URL, image_result)
+        or _short_circuit(Source.CONTENT, idio_result)
     )
-    if result is not None:
-        return result
+    if outcome is not None:
+        return outcome
 
     # fast mode has no search_page fallback: accept a bare date, but from text
     # only — itertext() skips comments and attributes yet keeps tail text
     if not extensive_search:
-        clean_html(search_tree, ["script", "style"])
-        text = " ".join(search_tree.itertext())
-        return pattern_search(text, TIMESTAMP_LOOSE_PATTERN, options)
+        if content_permitted:
+            clean_html(search_tree, ["script", "style"])
+            text = " ".join(search_tree.itertext())
+            fast_result = pattern_search(text, TIMESTAMP_LOOSE_PATTERN, options)
+            _record(options, Source.CONTENT, fast_result)
+        else:
+            fast_result = None
+        outcome = _short_circuit(Source.CONTENT, fast_result)
+        if outcome is not None:
+            return outcome
+        if corroborating:
+            return _finalize_corroboration()
+        return _unknown(options, explain)
 
     LOGGER.debug("extensive search started")
-    # TODO: further tests & decide according to original_date
-    reference: datetime | None = None
-    for segment in FREE_TEXT_EXPRESSIONS(search_tree):
-        segment = segment.strip()
-        if not MIN_SEGMENT_LEN < len(segment) < MAX_SEGMENT_LEN:
-            continue
-        reference = compare_reference(reference, segment, options)
-    converted = check_extracted_reference(reference, options)
-    # return or search page HTML
-    return converted or search_page(htmlstring, options)
+    if content_permitted:
+        # TODO: further tests & decide according to original_date
+        reference: datetime | None = None
+        for segment in FREE_TEXT_EXPRESSIONS(search_tree):
+            segment = segment.strip()
+            if not MIN_SEGMENT_LEN < len(segment) < MAX_SEGMENT_LEN:
+                continue
+            reference = compare_reference(reference, segment, options)
+        converted = check_extracted_reference(reference, options)
+        _record(options, Source.CONTENT, converted)
+        # return or search page HTML
+        page_result = search_page(htmlstring, options)
+        _record(options, Source.CONTENT, page_result)
+    else:
+        converted = page_result = None
+    outcome = (
+        _short_circuit(Source.CONTENT, converted)
+        or _short_circuit(Source.CONTENT, page_result)
+    )
+    if outcome is not None:
+        return outcome
+    if corroborating:
+        return _finalize_corroboration()
+    return _unknown(options, explain)
+
+
+def _finish(
+    options: Extractor,
+    source: Source,
+    value: str,
+    explain: bool,
+) -> str | dict[str, Any]:
+    "Adopt a channel result and format the return value (default, no-require mode)."
+    options.evidence.adopt(source, value)  # type: ignore[union-attr]
+    if explain:
+        return options.evidence.explanation(options.policy, value)  # type: ignore[union-attr]
+    return value
+
+
+def _unknown(
+    options: Extractor,
+    explain: bool,
+) -> str | None | dict[str, Any]:
+    "Return the unknown-date sentinel, optionally with the audit trail."
+    if explain:
+        return options.evidence.explanation(options.policy, None)  # type: ignore[union-attr]
+    return None

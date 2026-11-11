@@ -6,7 +6,7 @@ Module bundling functions related to HTML processing.
 import logging
 import re
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import urllib3
@@ -21,6 +21,7 @@ from charset_normalizer import from_bytes
 from lxml.html import HtmlElement, HTMLParser, fromstring
 
 from .settings import MAX_FILE_SIZE
+from .sources import SourceEvidence, SourcePolicy
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class Extractor:
     min: datetime
     original: bool
     format: str
+    policy: SourcePolicy = field(default_factory=SourcePolicy)
+    evidence: SourceEvidence | None = None
 
 
 def is_wrong_document(data: str | bytes | HtmlElement | None) -> bool:

@@ -1,6 +1,7 @@
 ## Changelog
 
 ## 1.x.x
+- feature: call-level source policies (`source_policy`) to allow, disable or require the `structured`, `meta`, `time`, `content` and `url` evidence channels, with an `explain` audit of adopted and excluded sources; disabled channels are never queried
 - fix: prefer JSON-LD dates over less reliable header fallbacks (#195)
 
 ## 1.11.0

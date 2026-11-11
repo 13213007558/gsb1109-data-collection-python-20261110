@@ -67,6 +67,78 @@ Although the time delta between the original publication and the "last modified"
     '2016-06-23'
 
 
+Source policies
+~~~~~~~~~~~~~~~
+
+A URL date can be a section archive date rather than the article date, while on
+other sites the URL is the only place where a date is available. The
+``source_policy`` parameter lets each call decide which evidence channels may,
+must not, or must provide the date. The five channels are:
+
+- ``structured``: structured data such as JSON-LD (``datePublished``/``dateModified``),
+- ``meta``: ``meta`` elements in the page header,
+- ``time``: HTML ``time`` elements,
+- ``content``: dates found in the page body and markup text,
+- ``url``: dates read from the page URL (including canonical and image URLs).
+
+Policies are attached to a single call. They never modify the default
+configuration, so different policies can be used interleaved safely. A disabled
+channel is not queried at all: the value is never extracted and then discarded.
+
+.. code-block:: python
+
+    >>> from htmldate import Source, SourcePolicy
+    # a URL date must not be trusted on this site
+    >>> policy = SourcePolicy(disable=["url"])
+    >>> find_date(htmlstring, url=myurl, source_policy=policy)
+
+    # or through a plain mapping / JSON string (e.g. from configuration)
+    >>> find_date(htmlstring, source_policy={"disable": ["url"]})
+    >>> find_date(htmlstring, source_policy='{"disable": ["url"]}')
+
+Restrict the search to a subset of channels with ``allow``:
+
+.. code-block:: python
+
+    >>> SourcePolicy(allow=["structured", "meta"])
+
+Require several channels to corroborate each other. When a required channel is
+missing, or when the required channels do not agree on one date, the result is
+unknown (``None``) instead of a guess:
+
+.. code-block:: python
+
+    >>> policy = SourcePolicy(require=["url", "meta"])
+    >>> find_date(htmlstring, url=myurl, source_policy=policy)
+
+Set ``explain=True`` to obtain an audit dictionary instead of a plain date. It
+lists the adopted channels (``used``), every value that was considered, the
+channels excluded by the policy with the reason, and any requirement that could
+not be satisfied:
+
+.. code-block:: python
+
+    >>> find_date(htmlstring, source_policy=SourcePolicy(disable=["url"]), explain=True)
+    {'result': '2017-01-02', 'used': [{'source': 'meta', ...}],
+     'considered': {...}, 'excluded': {'url': 'disabled by policy'},
+     'missing_required': [], 'disagreement': [], 'policy': {...}}
+
+On the command line, pass inline JSON or a path to a JSON file with
+``--source-policy`` and add ``--explain`` for the audit output:
+
+.. code-block:: bash
+
+    $ htmldate --source-policy '{"disable": ["url"]}' --explain < page.html
+
+.. autoclass:: htmldate.sources.SourcePolicy
+   :members:
+   :show-inheritance:
+
+.. autoclass:: htmldate.sources.Source
+   :members:
+   :undoc-members:
+
+
 Settings
 --------
 
