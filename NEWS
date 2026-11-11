@@ -1,6 +1,17 @@
 w3lib release notes
 ===================
 
+2.6.1 (unreleased)
+------------------
+
+New features:
+
+- Added :func:`~w3lib.url.redact_url_query`, which returns a copy of a URL
+  with selected query parameter values replaced by ``REDACTED`` for safe
+  logging. Parameters whose values are themselves URLs can be declared as
+  nested, so their inner queries are redacted too; values that cannot be
+  decoded, parsed as a URL, or nested past the depth limit are redacted whole.
+
 2.6.0 (2026-11-05)
 ------------------
 

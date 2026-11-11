@@ -9,6 +9,7 @@ from urllib.parse import (
     parse_qsl,
     quote,
     quote_plus,
+    unquote,
     unquote_to_bytes,
     urlparse,
     urlsplit,
@@ -53,6 +54,7 @@ from w3lib.url import (
     parse_qsl_to_bytes,
     parse_url,
     path_to_file_uri,
+    redact_url_query,
     safe_download_url,
     safe_url_string,
     url_query_cleaner,
@@ -1527,6 +1529,262 @@ class TestUrl:
             any_to_uri("http://www.example.com/some/path.txt")
             == "http://www.example.com/some/path.txt"
         )
+
+
+class TestRedactUrlQuery:
+    SENSITIVE_MARK = "topsecret"
+
+    def test_basic_redaction(self) -> None:
+        assert (
+            redact_url_query("https://example.com/?token=secret&ok=1", "token")
+            == "https://example.com/?token=REDACTED&ok=1"
+        )
+
+    def test_multiple_parameter_names(self) -> None:
+        url = "https://example.com/?a=1&b=2&c=3"
+        assert (
+            redact_url_query(url, ["a", "c"])
+            == "https://example.com/?a=REDACTED&b=2&c=REDACTED"
+        )
+        # a single string is one parameter name, not an iterable of letters
+        assert (
+            redact_url_query("https://example.com/?ab=1", "ab")
+            == "https://example.com/?ab=REDACTED"
+        )
+
+    def test_repeated_parameters_are_all_redacted(self) -> None:
+        assert (
+            redact_url_query("https://example.com/?token=a&x=1&token=b", "token")
+            == "https://example.com/?token=REDACTED&x=1&token=REDACTED"
+        )
+
+    def test_empty_value_and_missing_equals_stay_distinct(self) -> None:
+        # "token=" has an equals sign and gets a value; "bare" has none and is
+        # left without one.
+        assert (
+            redact_url_query("https://example.com/?token=&bare&ok=1", "token")
+            == "https://example.com/?token=REDACTED&bare&ok=1"
+        )
+        assert (
+            redact_url_query("https://example.com/?token", "token")
+            == "https://example.com/?token"
+        )
+
+    def test_unselected_fields_are_not_reencoded(self) -> None:
+        url = "https://example.com/?z=%c3%A9%2f&token=s&w=%41"
+        assert (
+            redact_url_query(url, "token")
+            == "https://example.com/?z=%c3%A9%2f&token=REDACTED&w=%41"
+        )
+
+    def test_url_without_query_is_unchanged(self) -> None:
+        for url in (
+            "https://example.com/path",
+            "https://example.com/path?",
+            "https://example.com/path#frag?token=x",
+        ):
+            assert redact_url_query(url, "token") == url
+
+    def test_no_rules_returns_url_unchanged(self) -> None:
+        url = "https://example.com/?a=1&b=%41"
+        assert redact_url_query(url) == url
+        assert redact_url_query(url, (), nested_url_parameters=()) == url
+
+    def test_bytes_input_returns_str_and_keeps_original(self) -> None:
+        original = "https://example.com/?token=secret"
+        result = redact_url_query(original.encode(), "token")
+        assert result == "https://example.com/?token=REDACTED"
+        assert isinstance(result, str)
+        # the caller's URL is not modified
+        assert original == "https://example.com/?token=secret"
+
+    def test_fragment_is_left_untouched(self) -> None:
+        assert (
+            redact_url_query(
+                "https://example.com/?token=secret#frag/with?token=x", "token"
+            )
+            == "https://example.com/?token=REDACTED#frag/with?token=x"
+        )
+
+    def test_custom_separator(self) -> None:
+        assert (
+            redact_url_query(
+                "https://example.com/?token=s;ok=1", "token", separator=";"
+            )
+            == "https://example.com/?token=REDACTED;ok=1"
+        )
+        with pytest.raises(ValueError, match="separator"):
+            redact_url_query("https://example.com/?a=1", "a", separator="&&")
+
+    def test_invalid_depth(self) -> None:
+        with pytest.raises(ValueError, match="max_nested_url_depth"):
+            redact_url_query("https://example.com/?a=1", "a", max_nested_url_depth=-1)
+
+    def test_nested_url_redacts_inner_sensitive_parameter(self) -> None:
+        inner = "https://hook.example/cb?token=" + self.SENSITIVE_MARK + "&ok=1"
+        url = "https://example.com/api?callback=" + quote(inner, safe="")
+        result = redact_url_query(url, "token", nested_url_parameters="callback")
+        assert result == (
+            "https://example.com/api?callback="
+            + quote("https://hook.example/cb?token=REDACTED&ok=1", safe="")
+        )
+        assert self.SENSITIVE_MARK not in result
+        assert self.SENSITIVE_MARK not in unquote(result)
+
+    def test_nested_url_with_deeply_nested_value(self) -> None:
+        deepest = "https://deep.example/?api_key=" + self.SENSITIVE_MARK
+        middle = "https://mid.example/?next=" + quote(deepest, safe="")
+        outer = "https://example.com/?callback=" + quote(middle, safe="")
+        result = redact_url_query(
+            outer,
+            "api_key",
+            nested_url_parameters=["callback", "next"],
+        )
+        assert self.SENSITIVE_MARK not in result
+        assert self.SENSITIVE_MARK not in unquote(result)
+        assert self.SENSITIVE_MARK not in unquote(unquote(result))
+        # every nesting layer was reached and the deepest one redacted
+        assert unquote(unquote(result)).endswith("api_key=REDACTED")
+
+    def test_nested_url_round_trip_when_no_parameter_matches(self) -> None:
+        inner = "https://hook.example/p?x=1&y=a b&z=%41#frag"
+        url = "https://example.com/?callback=" + quote(inner, safe="")
+        assert redact_url_query(url, "token", nested_url_parameters="callback") == url
+
+    def test_nested_parameter_without_query_is_encoded_once(self) -> None:
+        inner = "https://hook.example/path"
+        url = "https://example.com/?callback=" + quote(inner, safe="")
+        assert redact_url_query(url, nested_url_parameters="callback") == url
+
+    def test_nested_value_uses_uppercase_percent_encoding(self) -> None:
+        # a nested value re-serializes with uppercase escapes, but keeps its
+        # meaning: the redacted output decodes back to the same nested URL
+        inner = "https://hook.example/p%2f?x=1"
+        url = "https://example.com/?callback=" + quote(inner, safe="")
+        result = redact_url_query(url, "token", nested_url_parameters="callback")
+        assert "%2f" not in result
+        assert "%2F" in result
+        assert unquote(unquote(result)) == unquote(unquote(url))
+
+    def test_nested_empty_value_is_redacted_bare_parameter_is_not(self) -> None:
+        assert (
+            redact_url_query(
+                "https://example.com/?callback=&callback",
+                nested_url_parameters="callback",
+            )
+            == "https://example.com/?callback=REDACTED&callback"
+        )
+
+    def test_bad_percent_escape_in_nested_value_is_redacted(self) -> None:
+        url = "https://example.com/?callback=ht%zz%2F" + "&token=" + self.SENSITIVE_MARK
+        result = redact_url_query(url, "token", nested_url_parameters="callback")
+        assert result == ("https://example.com/?callback=REDACTED&token=REDACTED")
+        assert self.SENSITIVE_MARK not in result
+
+    def test_invalid_utf8_in_nested_value_is_redacted(self) -> None:
+        url = "https://example.com/?callback=https%3A%2F%2Fh%2F%FF"
+        assert (
+            redact_url_query(url, nested_url_parameters="callback")
+            == "https://example.com/?callback=REDACTED"
+        )
+
+    def test_unrecognizable_nested_value_is_redacted(self) -> None:
+        # no scheme: this is an ordinary value, not a URL, so it must not be
+        # decoded and leaked.
+        url = "https://example.com/?callback=not+a+url%2Ftoken%3D" + self.SENSITIVE_MARK
+        result = redact_url_query(url, "token", nested_url_parameters="callback")
+        assert result == "https://example.com/?callback=REDACTED"
+        assert self.SENSITIVE_MARK not in unquote(result)
+
+    def test_nesting_depth_limit_redacts_the_overflowing_layer(self) -> None:
+        # 3 nested URLs below the outer one, carrying the secret at the bottom.
+        value = "https://l0.example/?token=" + self.SENSITIVE_MARK
+        for _ in range(3):
+            value = "https://nest.example/?u=" + quote(value, safe="")
+        url = "https://example.com/?u=" + quote(value, safe="")
+        result = redact_url_query(
+            url, "token", nested_url_parameters="u", max_nested_url_depth=2
+        )
+        # the layer past the depth limit is masked, so the secret at the
+        # bottom cannot surface either encoded or decoded
+        assert "REDACTED" in result
+        fully_decoded = result
+        for _ in range(5):
+            fully_decoded = unquote(fully_decoded)
+        assert self.SENSITIVE_MARK not in fully_decoded
+
+    def test_depth_zero_redacts_nested_values_whole(self) -> None:
+        inner = "https://hook.example/?token=" + self.SENSITIVE_MARK
+        url = "https://example.com/?callback=" + quote(inner, safe="")
+        result = redact_url_query(
+            url,
+            "token",
+            nested_url_parameters="callback",
+            max_nested_url_depth=0,
+        )
+        assert result == "https://example.com/?callback=REDACTED"
+        assert self.SENSITIVE_MARK not in unquote(result)
+
+    def test_malformed_nested_value_cannot_leak_through_error_branch(self) -> None:
+        malicious_values = (
+            "https%3A%2F%2Fh%2F%E2%82",  # truncated UTF-8 sequence
+            "https%3A%2F%2Fh%2F%zz",  # bad hex digits
+            "https%3A%2F%2Fh%2F%",  # dangling percent sign
+            quote("javascript:alert(1)//?token=" + self.SENSITIVE_MARK, safe=""),
+        )
+        for value in malicious_values:
+            url = "https://example.com/?callback=" + value
+            result = redact_url_query(url, "token", nested_url_parameters="callback")
+            assert self.SENSITIVE_MARK not in result
+            assert self.SENSITIVE_MARK not in unquote(result)
+
+    def test_sensitive_and_nested_parameters_with_the_same_name(self) -> None:
+        # a name declared as nested is processed as a nested URL, not masked
+        # before its inner query can be redacted
+        inner = "https://hook.example/?token=" + self.SENSITIVE_MARK
+        url = "https://example.com/?token=" + quote(inner, safe="")
+        result = redact_url_query(url, "token", nested_url_parameters="token")
+        assert self.SENSITIVE_MARK not in result
+        assert unquote(result).endswith("token=REDACTED")
+
+
+class TestRedactUrlQueryProperties:
+    @given(hyp_urls())
+    def test_no_exception(self, url: str) -> None:
+        redact_url_query(url, "token", nested_url_parameters="callback")
+
+    @given(st.text())
+    def test_no_exception_arbitrary_text(self, url: str) -> None:
+        redact_url_query(url, ["a", "b"], nested_url_parameters=["c", "d"])
+
+    @given(hyp_urls())
+    def test_no_rules_returns_input_unchanged(self, url: str) -> None:
+        assert redact_url_query(url) == url
+
+    @given(
+        st.text(
+            alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz0123456789"),
+            min_size=8,
+        ),
+        st.integers(min_value=0, max_value=6),
+    )
+    def test_nested_secret_never_leaks(self, secret: str, depth: int) -> None:
+        value = "https://l0.example/?token=" + quote(secret, safe="")
+        for _ in range(depth):
+            value = "https://nest.example/?u=" + quote(value, safe="")
+        url = "https://example.com/?u=" + quote(value, safe="")
+        result = redact_url_query(
+            url,
+            "token",
+            nested_url_parameters="u",
+            max_nested_url_depth=depth + 1,
+        )
+        fully_decoded = result
+        for _ in range(depth + 2):
+            fully_decoded = unquote(fully_decoded)
+        assert secret not in result
+        assert secret not in fully_decoded
+        assert "REDACTED" in unquote(result)
 
 
 class TestSafeDownloadUrlProperties:

@@ -51,7 +51,7 @@ from ._url import (
 from ._util import to_unicode
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from ._types import AnyUnicodeError
 
@@ -472,6 +472,174 @@ def url_query_cleaner(
     return url
 
 
+_REDACTED = "REDACTED"
+_DEFAULT_MAX_NESTED_URL_DEPTH = 10
+
+# A percent sign that does not start a valid percent-encoded byte ("%HH").
+_BAD_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+# The scheme production of RFC 3986: an inner value is only treated as a URL
+# when it starts with a scheme, so ordinary values such as "not a url" are not
+# mistaken for nested URLs.
+_NESTED_URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+
+
+def _unquote_query_component(segment: str) -> tuple[str, bool]:
+    """Decode one percent-encoding layer of *segment* as UTF-8.
+
+    Return ``(text, ok)``: *ok* is ``False`` for a bad percent escape or bytes
+    that are not valid UTF-8, instead of letting a malformed marked value
+    through unchanged.
+    """
+    if _BAD_PERCENT_ESCAPE_RE.search(segment) is not None:
+        return "", False
+    try:
+        return _unquote(segment).decode("utf-8"), True
+    except UnicodeDecodeError:
+        return "", False
+
+
+def _as_parameter_tuple(parameters: str | Collection[str]) -> tuple[str, ...]:
+    if isinstance(parameters, str):
+        return (parameters,)
+    return tuple(parameters)
+
+
+def _redact_nested_value(
+    raw_value: str,
+    sensitive: frozenset[str],
+    nested: frozenset[str],
+    depth: int,
+    separator: str,
+) -> str:
+    """Redact the query of a nested URL carried as *raw_value*, one encoding
+    layer deeper than the caller.
+
+    Return :data:`_REDACTED` whenever the inner value cannot be decoded, does
+    not look like a URL, or the nesting depth limit is reached: a marked value
+    must never pass through an error branch verbatim.
+    """
+    if depth <= 0 or not raw_value:
+        return _REDACTED
+    inner, ok = _unquote_query_component(raw_value)
+    if not ok or _NESTED_URL_SCHEME_RE.match(inner) is None:
+        return _REDACTED
+    pre_fragment, hash_mark, fragment = inner.partition("#")
+    base, question_mark, inner_query = pre_fragment.partition("?")
+    if not question_mark:
+        # No nested query to inspect, but the value still goes through one
+        # decode/re-encode round trip like every other nested value.
+        redacted_inner = inner
+    else:
+        redacted_inner = (
+            base
+            + "?"
+            + _redact_query(inner_query, sensitive, nested, depth - 1, separator)
+            + hash_mark
+            + fragment
+        )
+    return _quote(redacted_inner.encode("utf-8")).decode()
+
+
+def _redact_query(
+    query: str,
+    sensitive: frozenset[str],
+    nested: frozenset[str],
+    depth: int,
+    separator: str,
+) -> str:
+    redacted_fields: list[str] = []
+    for field in query.split(separator):
+        if not field:
+            redacted_fields.append(field)
+            continue
+        raw_key, has_equal, raw_value = field.partition("=")
+        key, key_ok = _unquote_query_component(raw_key)
+        if not key_ok:
+            # An undecodable name cannot be a selected parameter, leave the
+            # whole field untouched instead of guessing.
+            redacted_fields.append(field)
+            continue
+        if key in nested:
+            if not has_equal:
+                redacted_fields.append(raw_key)
+            else:
+                redacted_fields.append(
+                    raw_key
+                    + "="
+                    + _redact_nested_value(
+                        raw_value, sensitive, nested, depth, separator
+                    )
+                )
+        elif key in sensitive:
+            redacted_fields.append(raw_key + "=" + _REDACTED if has_equal else raw_key)
+        else:
+            redacted_fields.append(field)
+    return separator.join(redacted_fields)
+
+
+def redact_url_query(
+    url: str | bytes,
+    sensitive_parameters: str | Collection[str] = (),
+    *,
+    nested_url_parameters: str | Collection[str] = (),
+    max_nested_url_depth: int = _DEFAULT_MAX_NESTED_URL_DEPTH,
+    separator: str = "&",
+) -> str:
+    """Return a copy of *url* with selected query parameter values redacted.
+
+    The result is meant for logs and diagnostics only: the input *url* is never
+    modified, pass the original to the request layer.
+
+    *sensitive_parameters* names the parameters whose values are replaced with
+    ``REDACTED``. *nested_url_parameters* names parameters whose values are
+    themselves URLs, typically percent-encoded inside the outer query (a
+    callback URL, a ``next`` redirect, etc.): the outer encoding layer is
+    decoded, the nested URL is redacted with the same rules, and it is
+    percent-encoded again. A nested parameter whose value cannot be decoded or
+    parsed as a URL is redacted whole, like a sensitive parameter.
+
+    >>> import w3lib.url
+    >>> w3lib.url.redact_url_query(
+    ...     "https://example.com/?token=secret&ok=1", "token"
+    ... )
+    'https://example.com/?token=REDACTED&ok=1'
+    >>> w3lib.url.redact_url_query(
+    ...     "https://example.com/?callback=https%3A%2F%2Fh.example%2F%3Ftoken%3Ds",
+    ...     "token",
+    ...     nested_url_parameters="callback",
+    ... )
+    'https://example.com/?callback=https%3A%2F%2Fh.example%2F%3Ftoken%3DREDACTED'
+
+    Repeated parameters are redacted one by one. An empty value (``name=``)
+    becomes ``name=REDACTED`` while a parameter without an equals sign
+    (``name``) is left bare, and fields that no rule selects are kept byte for
+    byte, including their percent encoding.
+
+    A nested value that cannot be percent-decoded, that is not a URL, or whose
+    nesting goes past *max_nested_url_depth* layers is redacted whole, so a
+    malformed value can never smuggle a marked secret through an error branch.
+    *separator* is the query separator, it must be a single character.
+    """
+    if len(separator) != 1:
+        raise ValueError("separator must be a single character")
+    if max_nested_url_depth < 0:
+        raise ValueError("max_nested_url_depth must be >= 0")
+    text = to_unicode(url)
+    nested = frozenset(_as_parameter_tuple(nested_url_parameters))
+    sensitive = frozenset(_as_parameter_tuple(sensitive_parameters))
+    if not sensitive and not nested:
+        return text
+    pre_fragment, hash_mark, fragment = text.partition("#")
+    base, question_mark, query = pre_fragment.partition("?")
+    if not question_mark or not query:
+        return text
+    redacted_query = _redact_query(
+        query, sensitive, nested, max_nested_url_depth, separator
+    )
+    return base + "?" + redacted_query + hash_mark + fragment
+
+
 def _add_or_replace_parameters(
     url: str, params: dict[bytes, bytes], *, separator: str = "&"
 ) -> str:
@@ -727,6 +895,7 @@ __all__ = [
     "is_url",
     "parse_data_uri",
     "path_to_file_uri",
+    "redact_url_query",
     "safe_url_string",
     "url_query_cleaner",
     "url_query_parameter",
