@@ -1,0 +1,705 @@
+{
+  "mechanize_version": "0.4.10",
+  "python": "3.12.13",
+  "cases": [
+    {
+      "id": "01-duplicate-fields",
+      "page": "pages/01_duplicate_fields.html",
+      "steps": [
+        {
+          "action": "select form nr=0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "list controls",
+          "ok": true,
+          "detail": [
+            [
+              "tag",
+              "text"
+            ],
+            [
+              "tag",
+              "text"
+            ],
+            [
+              "opt",
+              "checkbox"
+            ],
+            [
+              "go",
+              "submit"
+            ]
+          ]
+        },
+        {
+          "action": "naive: br.form['tag'] = 'first' (ambiguous name)",
+          "ok": false,
+          "error": "AmbiguityError: more than one control matching name 'tag'"
+        },
+        {
+          "action": "adapted: set_value(..., nr=0/1) for each tag",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "build request: form.click(name='go')",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x10824cce0>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "same-name checkboxes exposed as separate controls (DOM-like)",
+          "expected": 2,
+          "actual": 1,
+          "pass": false
+        },
+        {
+          "name": "both text inputs submitted in document order",
+          "expected": [
+            [
+              "tag",
+              "first"
+            ],
+            [
+              "tag",
+              "second"
+            ]
+          ],
+          "actual": [
+            [
+              "tag",
+              "first"
+            ],
+            [
+              "tag",
+              "second"
+            ]
+          ],
+          "pass": true
+        },
+        {
+          "name": "both checked checkboxes submitted",
+          "expected": [
+            [
+              "opt",
+              "a"
+            ],
+            [
+              "opt",
+              "b"
+            ]
+          ],
+          "actual": [
+            [
+              "opt",
+              "a"
+            ],
+            [
+              "opt",
+              "b"
+            ]
+          ],
+          "pass": true
+        },
+        {
+          "name": "full pair sequence matches document order",
+          "expected": [
+            [
+              "tag",
+              "first"
+            ],
+            [
+              "tag",
+              "second"
+            ],
+            [
+              "opt",
+              "a"
+            ],
+            [
+              "opt",
+              "b"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "actual": [
+            [
+              "tag",
+              "first"
+            ],
+            [
+              "tag",
+              "second"
+            ],
+            [
+              "opt",
+              "a"
+            ],
+            [
+              "opt",
+              "b"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "pass": true
+        }
+      ],
+      "assertions_passed": "3/4",
+      "wire_seqs": [
+        1
+      ]
+    },
+    {
+      "id": "02-disabled-fieldset",
+      "page": "pages/02_disabled_fieldset.html",
+      "steps": [
+        {
+          "action": "select form nr=0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "control disabled flags as parsed",
+          "ok": true,
+          "detail": {
+            "outside": false,
+            "in_legend": false,
+            "inner": false,
+            "inner_sel": false,
+            "go": false
+          }
+        },
+        {
+          "action": "naive submit: form.click(name='go')",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1085e91c0>"
+        },
+        {
+          "action": "adaptation: select form",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "adaptation: mark fieldset-descendant controls disabled",
+          "ok": true,
+          "detail": {
+            "outside": false,
+            "in_legend": false,
+            "inner": true,
+            "inner_sel": true,
+            "go": false
+          }
+        },
+        {
+          "action": "adapted submit",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087a0560>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "naive submit matches HTML5 (fieldset-disabled controls excluded)",
+          "expected": [
+            [
+              "outside",
+              "o"
+            ],
+            [
+              "in_legend",
+              "L"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "actual": [
+            [
+              "outside",
+              "o"
+            ],
+            [
+              "in_legend",
+              "L"
+            ],
+            [
+              "inner",
+              "x"
+            ],
+            [
+              "inner_sel",
+              "s1"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "pass": false
+        },
+        {
+          "name": "extra fields leaked by naive submit",
+          "expected": [],
+          "actual": [
+            [
+              "inner",
+              "x"
+            ],
+            [
+              "inner_sel",
+              "s1"
+            ]
+          ],
+          "pass": false
+        },
+        {
+          "name": "adapted submit matches HTML5 semantics",
+          "expected": [
+            [
+              "outside",
+              "o"
+            ],
+            [
+              "in_legend",
+              "L"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "actual": [
+            [
+              "outside",
+              "o"
+            ],
+            [
+              "in_legend",
+              "L"
+            ],
+            [
+              "go",
+              "1"
+            ]
+          ],
+          "pass": true
+        }
+      ],
+      "assertions_passed": "1/3",
+      "wire_seqs": [
+        2,
+        3
+      ]
+    },
+    {
+      "id": "03-external-controls",
+      "page": "pages/03_external_controls.html",
+      "steps": [
+        {
+          "action": "number of forms discovered",
+          "ok": true,
+          "detail": 1
+        },
+        {
+          "action": "select form id=f",
+          "ok": true,
+          "detail": "<mechanize._form_controls.HTMLForm object at 0x1087c8a40>"
+        },
+        {
+          "action": "controls associated with form f",
+          "ok": true,
+          "detail": [
+            [
+              "internal",
+              "text"
+            ],
+            [
+              "ext",
+              "text"
+            ],
+            [
+              "go",
+              "submit"
+            ]
+          ]
+        },
+        {
+          "action": "submit via external button: form.click(name='go')",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1085e9670>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "external controls (form=f) submitted in document order",
+          "expected": [
+            [
+              "internal",
+              "i"
+            ],
+            [
+              "ext",
+              "e"
+            ],
+            [
+              "go",
+              "ext_submit"
+            ]
+          ],
+          "actual": [
+            [
+              "internal",
+              "i"
+            ],
+            [
+              "ext",
+              "e"
+            ],
+            [
+              "go",
+              "ext_submit"
+            ]
+          ],
+          "pass": true
+        },
+        {
+          "name": "orphan (form=no_such_form) and no-form controls excluded",
+          "expected": "absent",
+          "actual": [],
+          "pass": true
+        }
+      ],
+      "assertions_passed": "2/2",
+      "wire_seqs": [
+        4
+      ]
+    },
+    {
+      "id": "04-submit-overrides",
+      "page": "pages/04_submit_overrides.html",
+      "steps": [
+        {
+          "action": "select form nr=0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "click btn (formaction=/submit/04-override formmethod=post)",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087a22a0>"
+        },
+        {
+          "action": "send generated request",
+          "ok": false,
+          "error": "ValueError: unknown url type: /submit/04-override"
+        },
+        {
+          "action": "reload + select form",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "click btn2 (formenctype=text/plain)",
+          "ok": false,
+          "error": "ValueError: unknown POST form encoding type 'text/plain'"
+        },
+        {
+          "action": "adaptation: reload + select form",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "adaptation: resolve formaction against base URL",
+          "ok": true,
+          "detail": "http://probe.local/submit/04-override"
+        },
+        {
+          "action": "adapted click btn",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087a1bb0>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "formaction resolved against document base URL",
+          "expected": "http://probe.local/submit/04-override",
+          "actual": "/submit/04-override",
+          "pass": false
+        },
+        {
+          "name": "formmethod=post honoured",
+          "expected": "POST",
+          "actual": "POST",
+          "pass": true
+        },
+        {
+          "name": "text/plain formenctype supported",
+          "expected": "request generated",
+          "actual": "see step error above",
+          "pass": false
+        },
+        {
+          "name": "adapted request: POST to absolute override URL",
+          "expected": [
+            "POST",
+            "/submit/04-override"
+          ],
+          "actual": [
+            "POST",
+            "/submit/04-override"
+          ],
+          "pass": true
+        },
+        {
+          "name": "adapted request body carries all successful controls",
+          "expected": [
+            [
+              "q",
+              "1"
+            ],
+            [
+              "btn",
+              "rel"
+            ]
+          ],
+          "actual": [
+            [
+              "q",
+              "1"
+            ],
+            [
+              "btn",
+              "rel"
+            ]
+          ],
+          "pass": true
+        }
+      ],
+      "assertions_passed": "3/5",
+      "wire_seqs": [
+        5
+      ]
+    },
+    {
+      "id": "05-file-input",
+      "page": "pages/05_file_input.html",
+      "steps": [
+        {
+          "action": "select form id=f1",
+          "ok": true,
+          "detail": "<mechanize._form_controls.HTMLForm object at 0x1087cbf50>"
+        },
+        {
+          "action": "naive: br.form['doc'] = '/tmp/report.txt'",
+          "ok": false,
+          "error": "ValueError: value attribute is readonly"
+        },
+        {
+          "action": "correct: form.add_file(BytesIO, 'text/plain', 'report.txt', name='doc')",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "submit f1",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087cbef0>"
+        },
+        {
+          "action": "select form id=f2 (empty file input)",
+          "ok": true,
+          "detail": "<mechanize._form_controls.HTMLForm object at 0x1087c9700>"
+        },
+        {
+          "action": "submit f2 with no file chosen",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087c8e00>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "Content-Type is multipart/form-data with boundary",
+          "expected": "multipart/form-data; boundary=...",
+          "actual": "multipart/form-data; boundary=---------------------------15176877315641520541493544467",
+          "pass": true
+        },
+        {
+          "name": "text field part present",
+          "expected": "name=\"note\"",
+          "actual": "in body",
+          "pass": true
+        },
+        {
+          "name": "text field value present",
+          "expected": "hello",
+          "actual": "in body",
+          "pass": true
+        },
+        {
+          "name": "file part with filename",
+          "expected": "name=\"doc\"; filename=\"report.txt\"",
+          "actual": "in body",
+          "pass": true
+        },
+        {
+          "name": "file part content type",
+          "expected": "Content-Type: text/plain",
+          "actual": "in body",
+          "pass": true
+        },
+        {
+          "name": "file bytes present",
+          "expected": "PDF-DATA",
+          "actual": "in body",
+          "pass": true
+        },
+        {
+          "name": "empty file control still sends a part with empty filename",
+          "expected": "name=\"doc2\"; filename=\"\"",
+          "actual": "in body",
+          "pass": true
+        }
+      ],
+      "assertions_passed": "7/7",
+      "wire_seqs": [
+        6,
+        7
+      ]
+    },
+    {
+      "id": "06-multi-select",
+      "page": "pages/06_multi_select.html",
+      "steps": [
+        {
+          "action": "select form nr=0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "initial value of multi select",
+          "ok": true,
+          "detail": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "action": "initial value of single select (no selected attr)",
+          "ok": true,
+          "detail": [
+            "x"
+          ]
+        },
+        {
+          "action": "naive: br.form['opts'] = 'c' on <select multiple>",
+          "ok": false,
+          "error": "TypeError: ListControl, must set a sequence"
+        },
+        {
+          "action": "proper: br.form['opts'] = ['a', 'c']",
+          "ok": true,
+          "detail": [
+            "a",
+            "c"
+          ]
+        },
+        {
+          "action": "submit",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087a05c0>"
+        },
+        {
+          "action": "adaptation: reload + select form",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "convention probe: br.form['single'] = 'y' (plain string)",
+          "ok": false,
+          "error": "TypeError: ListControl, must set a sequence"
+        },
+        {
+          "action": "proper: br.form['single'] = ['y'] (sequence)",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "action": "adapted submit",
+          "ok": true,
+          "detail": "<mechanize._request.Request object at 0x1087a3f80>"
+        }
+      ],
+      "assertions": [
+        {
+          "name": "multi select submits exactly the chosen values",
+          "expected": [
+            [
+              "opts",
+              "a"
+            ],
+            [
+              "opts",
+              "c"
+            ]
+          ],
+          "actual": [
+            [
+              "opts",
+              "a"
+            ],
+            [
+              "opts",
+              "c"
+            ]
+          ],
+          "pass": true
+        },
+        {
+          "name": "single select with no selected attr submits first option (browser behaviour)",
+          "expected": [
+            [
+              "single",
+              "x"
+            ]
+          ],
+          "actual": [
+            [
+              "single",
+              "x"
+            ]
+          ],
+          "pass": true
+        },
+        {
+          "name": "adapted submit includes single=y",
+          "expected": [
+            [
+              "single",
+              "y"
+            ]
+          ],
+          "actual": [
+            [
+              "single",
+              "y"
+            ]
+          ],
+          "pass": true
+        }
+      ],
+      "assertions_passed": "3/3",
+      "wire_seqs": [
+        8,
+        9
+      ]
+    }
+  ]
+}

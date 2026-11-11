@@ -1,0 +1,74 @@
+[
+  {
+    "seq": 1,
+    "method": "POST",
+    "path": "/submit/01",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/001_body.bin"
+  },
+  {
+    "seq": 2,
+    "method": "POST",
+    "path": "/submit/02",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/002_body.bin"
+  },
+  {
+    "seq": 3,
+    "method": "POST",
+    "path": "/submit/02",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/003_body.bin"
+  },
+  {
+    "seq": 4,
+    "method": "POST",
+    "path": "/submit/03",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/004_body.bin"
+  },
+  {
+    "seq": 5,
+    "method": "POST",
+    "path": "/submit/04-override",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/005_body.bin"
+  },
+  {
+    "seq": 6,
+    "method": "POST",
+    "path": "/submit/05",
+    "query_pairs": [],
+    "content_type": "multipart/form-data; boundary=---------------------------15176877315641520541493544467",
+    "body_file": "wire/006_body.bin"
+  },
+  {
+    "seq": 7,
+    "method": "POST",
+    "path": "/submit/05-empty",
+    "query_pairs": [],
+    "content_type": "multipart/form-data; boundary=---------------------------976081873464617681405110757",
+    "body_file": "wire/007_body.bin"
+  },
+  {
+    "seq": 8,
+    "method": "POST",
+    "path": "/submit/06",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/008_body.bin"
+  },
+  {
+    "seq": 9,
+    "method": "POST",
+    "path": "/submit/06",
+    "query_pairs": [],
+    "content_type": "application/x-www-form-urlencoded",
+    "body_file": "wire/009_body.bin"
+  }
+]

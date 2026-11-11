@@ -1,0 +1,106 @@
+{
+  "id": "04-submit-overrides",
+  "page": "pages/04_submit_overrides.html",
+  "steps": [
+    {
+      "action": "select form nr=0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "click btn (formaction=/submit/04-override formmethod=post)",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087a22a0>"
+    },
+    {
+      "action": "send generated request",
+      "ok": false,
+      "error": "ValueError: unknown url type: /submit/04-override"
+    },
+    {
+      "action": "reload + select form",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "click btn2 (formenctype=text/plain)",
+      "ok": false,
+      "error": "ValueError: unknown POST form encoding type 'text/plain'"
+    },
+    {
+      "action": "adaptation: reload + select form",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "adaptation: resolve formaction against base URL",
+      "ok": true,
+      "detail": "http://probe.local/submit/04-override"
+    },
+    {
+      "action": "adapted click btn",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087a1bb0>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "formaction resolved against document base URL",
+      "expected": "http://probe.local/submit/04-override",
+      "actual": "/submit/04-override",
+      "pass": false
+    },
+    {
+      "name": "formmethod=post honoured",
+      "expected": "POST",
+      "actual": "POST",
+      "pass": true
+    },
+    {
+      "name": "text/plain formenctype supported",
+      "expected": "request generated",
+      "actual": "see step error above",
+      "pass": false
+    },
+    {
+      "name": "adapted request: POST to absolute override URL",
+      "expected": [
+        "POST",
+        "/submit/04-override"
+      ],
+      "actual": [
+        "POST",
+        "/submit/04-override"
+      ],
+      "pass": true
+    },
+    {
+      "name": "adapted request body carries all successful controls",
+      "expected": [
+        [
+          "q",
+          "1"
+        ],
+        [
+          "btn",
+          "rel"
+        ]
+      ],
+      "actual": [
+        [
+          "q",
+          "1"
+        ],
+        [
+          "btn",
+          "rel"
+        ]
+      ],
+      "pass": true
+    }
+  ],
+  "assertions_passed": "3/5",
+  "wire_seqs": [
+    5
+  ]
+}

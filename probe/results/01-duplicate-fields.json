@@ -1,0 +1,156 @@
+{
+  "id": "01-duplicate-fields",
+  "page": "pages/01_duplicate_fields.html",
+  "steps": [
+    {
+      "action": "select form nr=0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "list controls",
+      "ok": true,
+      "detail": [
+        [
+          "tag",
+          "text"
+        ],
+        [
+          "tag",
+          "text"
+        ],
+        [
+          "opt",
+          "checkbox"
+        ],
+        [
+          "go",
+          "submit"
+        ]
+      ]
+    },
+    {
+      "action": "naive: br.form['tag'] = 'first' (ambiguous name)",
+      "ok": false,
+      "error": "AmbiguityError: more than one control matching name 'tag'"
+    },
+    {
+      "action": "adapted: set_value(..., nr=0/1) for each tag",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "build request: form.click(name='go')",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x10824cce0>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "same-name checkboxes exposed as separate controls (DOM-like)",
+      "expected": 2,
+      "actual": 1,
+      "pass": false
+    },
+    {
+      "name": "both text inputs submitted in document order",
+      "expected": [
+        [
+          "tag",
+          "first"
+        ],
+        [
+          "tag",
+          "second"
+        ]
+      ],
+      "actual": [
+        [
+          "tag",
+          "first"
+        ],
+        [
+          "tag",
+          "second"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "both checked checkboxes submitted",
+      "expected": [
+        [
+          "opt",
+          "a"
+        ],
+        [
+          "opt",
+          "b"
+        ]
+      ],
+      "actual": [
+        [
+          "opt",
+          "a"
+        ],
+        [
+          "opt",
+          "b"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "full pair sequence matches document order",
+      "expected": [
+        [
+          "tag",
+          "first"
+        ],
+        [
+          "tag",
+          "second"
+        ],
+        [
+          "opt",
+          "a"
+        ],
+        [
+          "opt",
+          "b"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "actual": [
+        [
+          "tag",
+          "first"
+        ],
+        [
+          "tag",
+          "second"
+        ],
+        [
+          "opt",
+          "a"
+        ],
+        [
+          "opt",
+          "b"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "pass": true
+    }
+  ],
+  "assertions_passed": "3/4",
+  "wire_seqs": [
+    1
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "id": "02-disabled-fieldset",
+  "page": "pages/02_disabled_fieldset.html",
+  "steps": [
+    {
+      "action": "select form nr=0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "control disabled flags as parsed",
+      "ok": true,
+      "detail": {
+        "outside": false,
+        "in_legend": false,
+        "inner": false,
+        "inner_sel": false,
+        "go": false
+      }
+    },
+    {
+      "action": "naive submit: form.click(name='go')",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1085e91c0>"
+    },
+    {
+      "action": "adaptation: select form",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "adaptation: mark fieldset-descendant controls disabled",
+      "ok": true,
+      "detail": {
+        "outside": false,
+        "in_legend": false,
+        "inner": true,
+        "inner_sel": true,
+        "go": false
+      }
+    },
+    {
+      "action": "adapted submit",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087a0560>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "naive submit matches HTML5 (fieldset-disabled controls excluded)",
+      "expected": [
+        [
+          "outside",
+          "o"
+        ],
+        [
+          "in_legend",
+          "L"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "actual": [
+        [
+          "outside",
+          "o"
+        ],
+        [
+          "in_legend",
+          "L"
+        ],
+        [
+          "inner",
+          "x"
+        ],
+        [
+          "inner_sel",
+          "s1"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "pass": false
+    },
+    {
+      "name": "extra fields leaked by naive submit",
+      "expected": [],
+      "actual": [
+        [
+          "inner",
+          "x"
+        ],
+        [
+          "inner_sel",
+          "s1"
+        ]
+      ],
+      "pass": false
+    },
+    {
+      "name": "adapted submit matches HTML5 semantics",
+      "expected": [
+        [
+          "outside",
+          "o"
+        ],
+        [
+          "in_legend",
+          "L"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "actual": [
+        [
+          "outside",
+          "o"
+        ],
+        [
+          "in_legend",
+          "L"
+        ],
+        [
+          "go",
+          "1"
+        ]
+      ],
+      "pass": true
+    }
+  ],
+  "assertions_passed": "1/3",
+  "wire_seqs": [
+    2,
+    3
+  ]
+}

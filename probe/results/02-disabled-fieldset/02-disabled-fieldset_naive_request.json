@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "http://probe.local/submit/02",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "body_file": "02-disabled-fieldset_naive_body.bin",
+  "body_preview": "outside=o&in_legend=L&inner=x&inner_sel=s1&go=1"
+}

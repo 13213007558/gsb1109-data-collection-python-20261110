@@ -1,0 +1,83 @@
+{
+  "id": "03-external-controls",
+  "page": "pages/03_external_controls.html",
+  "steps": [
+    {
+      "action": "number of forms discovered",
+      "ok": true,
+      "detail": 1
+    },
+    {
+      "action": "select form id=f",
+      "ok": true,
+      "detail": "<mechanize._form_controls.HTMLForm object at 0x1087c8a40>"
+    },
+    {
+      "action": "controls associated with form f",
+      "ok": true,
+      "detail": [
+        [
+          "internal",
+          "text"
+        ],
+        [
+          "ext",
+          "text"
+        ],
+        [
+          "go",
+          "submit"
+        ]
+      ]
+    },
+    {
+      "action": "submit via external button: form.click(name='go')",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1085e9670>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "external controls (form=f) submitted in document order",
+      "expected": [
+        [
+          "internal",
+          "i"
+        ],
+        [
+          "ext",
+          "e"
+        ],
+        [
+          "go",
+          "ext_submit"
+        ]
+      ],
+      "actual": [
+        [
+          "internal",
+          "i"
+        ],
+        [
+          "ext",
+          "e"
+        ],
+        [
+          "go",
+          "ext_submit"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "orphan (form=no_such_form) and no-form controls excluded",
+      "expected": "absent",
+      "actual": [],
+      "pass": true
+    }
+  ],
+  "assertions_passed": "2/2",
+  "wire_seqs": [
+    4
+  ]
+}

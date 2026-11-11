@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "http://probe.local/submit/06",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "body_file": "06-multi-select_adapted_body.bin",
+  "body_preview": "opts=a&opts=b&single=y&go=1"
+}

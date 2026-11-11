@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "http://probe.local/submit/04-override",
+  "headers": {
+    "Content-Type": "application/x-www-form-urlencoded"
+  },
+  "body_file": "04-submit-overrides_adapted_body.bin",
+  "body_preview": "q=1&btn=rel"
+}

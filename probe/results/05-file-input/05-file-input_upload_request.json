@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "http://probe.local/submit/05",
+  "headers": {
+    "Content-Type": "multipart/form-data; boundary=---------------------------15176877315641520541493544467"
+  },
+  "body_file": "05-file-input_upload_body.bin",
+  "body_preview": "-----------------------------15176877315641520541493544467\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n-----------------------------15176877315641520541493544467\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"report.txt\"\r\nContent-Type: text/plain\r\n\r\nPDF-DATA\r\n-----------------------------15176877315641520541493544467\r\nContent-Disposition: form-data; name=\"go\"\r\n\r\n1\r\n-------------"
+}

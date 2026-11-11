@@ -1,0 +1,127 @@
+{
+  "id": "06-multi-select",
+  "page": "pages/06_multi_select.html",
+  "steps": [
+    {
+      "action": "select form nr=0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "initial value of multi select",
+      "ok": true,
+      "detail": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "action": "initial value of single select (no selected attr)",
+      "ok": true,
+      "detail": [
+        "x"
+      ]
+    },
+    {
+      "action": "naive: br.form['opts'] = 'c' on <select multiple>",
+      "ok": false,
+      "error": "TypeError: ListControl, must set a sequence"
+    },
+    {
+      "action": "proper: br.form['opts'] = ['a', 'c']",
+      "ok": true,
+      "detail": [
+        "a",
+        "c"
+      ]
+    },
+    {
+      "action": "submit",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087a05c0>"
+    },
+    {
+      "action": "adaptation: reload + select form",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "convention probe: br.form['single'] = 'y' (plain string)",
+      "ok": false,
+      "error": "TypeError: ListControl, must set a sequence"
+    },
+    {
+      "action": "proper: br.form['single'] = ['y'] (sequence)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "adapted submit",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087a3f80>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "multi select submits exactly the chosen values",
+      "expected": [
+        [
+          "opts",
+          "a"
+        ],
+        [
+          "opts",
+          "c"
+        ]
+      ],
+      "actual": [
+        [
+          "opts",
+          "a"
+        ],
+        [
+          "opts",
+          "c"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "single select with no selected attr submits first option (browser behaviour)",
+      "expected": [
+        [
+          "single",
+          "x"
+        ]
+      ],
+      "actual": [
+        [
+          "single",
+          "x"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "adapted submit includes single=y",
+      "expected": [
+        [
+          "single",
+          "y"
+        ]
+      ],
+      "actual": [
+        [
+          "single",
+          "y"
+        ]
+      ],
+      "pass": true
+    }
+  ],
+  "assertions_passed": "3/3",
+  "wire_seqs": [
+    8,
+    9
+  ]
+}

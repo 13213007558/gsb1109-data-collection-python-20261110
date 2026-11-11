@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>03 external controls</title></head>
+<body>
+<form id="f" action="/submit/03" method="post">
+  <input type="text" name="internal" value="i">
+</form>
+<input type="text" name="ext" value="e" form="f">
+<input type="submit" name="go" value="ext_submit" form="f">
+<input type="text" name="orphan" value="x" form="no_such_form">
+<input type="text" name="noform" value="n">
+</body></html>

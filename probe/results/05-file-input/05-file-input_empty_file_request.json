@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "http://probe.local/submit/05-empty",
+  "headers": {
+    "Content-Type": "multipart/form-data; boundary=---------------------------976081873464617681405110757"
+  },
+  "body_file": "05-file-input_empty_file_body.bin",
+  "body_preview": "-----------------------------976081873464617681405110757\r\nContent-Disposition: form-data; name=\"doc2\"; filename=\"\"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n-----------------------------976081873464617681405110757\r\nContent-Disposition: form-data; name=\"go\"\r\n\r\n1\r\n-----------------------------976081873464617681405110757--\r\n"
+}

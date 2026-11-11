@@ -1,0 +1,85 @@
+{
+  "id": "05-file-input",
+  "page": "pages/05_file_input.html",
+  "steps": [
+    {
+      "action": "select form id=f1",
+      "ok": true,
+      "detail": "<mechanize._form_controls.HTMLForm object at 0x1087cbf50>"
+    },
+    {
+      "action": "naive: br.form['doc'] = '/tmp/report.txt'",
+      "ok": false,
+      "error": "ValueError: value attribute is readonly"
+    },
+    {
+      "action": "correct: form.add_file(BytesIO, 'text/plain', 'report.txt', name='doc')",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "action": "submit f1",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087cbef0>"
+    },
+    {
+      "action": "select form id=f2 (empty file input)",
+      "ok": true,
+      "detail": "<mechanize._form_controls.HTMLForm object at 0x1087c9700>"
+    },
+    {
+      "action": "submit f2 with no file chosen",
+      "ok": true,
+      "detail": "<mechanize._request.Request object at 0x1087c8e00>"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "Content-Type is multipart/form-data with boundary",
+      "expected": "multipart/form-data; boundary=...",
+      "actual": "multipart/form-data; boundary=---------------------------15176877315641520541493544467",
+      "pass": true
+    },
+    {
+      "name": "text field part present",
+      "expected": "name=\"note\"",
+      "actual": "in body",
+      "pass": true
+    },
+    {
+      "name": "text field value present",
+      "expected": "hello",
+      "actual": "in body",
+      "pass": true
+    },
+    {
+      "name": "file part with filename",
+      "expected": "name=\"doc\"; filename=\"report.txt\"",
+      "actual": "in body",
+      "pass": true
+    },
+    {
+      "name": "file part content type",
+      "expected": "Content-Type: text/plain",
+      "actual": "in body",
+      "pass": true
+    },
+    {
+      "name": "file bytes present",
+      "expected": "PDF-DATA",
+      "actual": "in body",
+      "pass": true
+    },
+    {
+      "name": "empty file control still sends a part with empty filename",
+      "expected": "name=\"doc2\"; filename=\"\"",
+      "actual": "in body",
+      "pass": true
+    }
+  ],
+  "assertions_passed": "7/7",
+  "wire_seqs": [
+    6,
+    7
+  ]
+}
