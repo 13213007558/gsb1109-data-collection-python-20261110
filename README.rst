@@ -243,6 +243,45 @@ and reopening the queue later does not help. Stop using a queue whose
 On a SQLite queue the failed ``push()`` call is rolled back and the queue stays
 usable.
 
+Inspecting and recovering crashed file queues
+---------------------------------------------
+
+A crashed ``FifoDiskQueue`` or ``LifoDiskQueue`` can be examined offline with
+the read-only recovery tool, which never opens a source file for writing and
+never modifies the original directory::
+
+    $ python -m queuelib inspect queue-dir
+    $ python -m queuelib inspect queue-file
+
+The inspection parses every record framing strictly and reports, separately:
+
+- complete records that the metadata accounts for (``referenced``),
+- complete tail records written after the metadata was last saved
+  (``unreferenced``),
+- records already consumed but whose bytes were not deleted (``consumed``),
+- truncated records, with the exact byte range that cannot be decoded,
+- missing chunk files, including gaps in the chunk numbering,
+- metadata and record-boundary mismatches.
+
+Undecodable bytes are listed as uncertain regions. They are never
+interpreted, so no record is ever guessed from a partial write. The command
+exits with status ``1`` when the queue is inconsistent, which makes it usable
+in scripts.
+
+The ``recover`` subcommand copies every provably complete record into a brand
+new queue, preserving the order the damaged queue would have popped items in.
+The destination must not exist yet and must not lie inside the source
+directory::
+
+    $ python -m queuelib recover queue-dir recovered-dir
+    $ python -m queuelib recover queue-file recovered-file
+
+Truncated regions and missing blocks stay behind in the source, whose bytes
+are left untouched as evidence. The same operations are available from
+Python through :func:`queuelib.recovery.inspect_queue`,
+:func:`queuelib.recovery.recover_queue` and
+:func:`queuelib.recovery.render_report`.
+
 Empty queues delete their files
 -------------------------------
 

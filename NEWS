@@ -1,6 +1,14 @@
 Queuelib release notes
 ======================
 
+Version 1.11.0
+--------------
+(unreleased)
+
+* Added read-only offline inspection and recovery for crashed
+  ``FifoDiskQueue`` and ``LifoDiskQueue`` queues (``python -m queuelib
+  inspect`` and ``python -m queuelib recover``)
+
 Version 1.10.0
 ---------------
 (released on 2026-08-24)
