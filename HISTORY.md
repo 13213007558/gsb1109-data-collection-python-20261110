@@ -8,6 +8,8 @@
 - Breaking: `UrlStore()` parameter `trailing` renamed to `trailing_slash`
 - Drop support for Python 3.8 and 3.9
 - `filter_links()` and `load_store()` are now exported at the top level
+- New `analyze_language()`: detailed language cues from host, path and query
+  combined by a caller-chosen policy into match/mismatch/conflict/unknown
 
 
 ## 1.3.2

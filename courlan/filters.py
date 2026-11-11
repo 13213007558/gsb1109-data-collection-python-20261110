@@ -4,10 +4,13 @@ Bundles functions needed to target text content and validate the input.
 
 import logging
 import re
-from urllib.parse import SplitResult, urlsplit
+from dataclasses import dataclass
+from enum import Enum
+from urllib.parse import SplitResult, parse_qsl, urlsplit
 
 from .hosts import _canonical_ip
-from .langcodes import langcodes_score
+from .langcodes import ISO_LANGS, ISO_TERRS, langcodes_score
+from .settings import LANG_PARAMS, TARGET_LANGS
 from .urlutils import _strip_trailing_dot
 
 LOGGER = logging.getLogger(__name__)
@@ -219,6 +222,162 @@ def lang_filter(
     if strict and (match := HOST_LANG_FILTER.match(url)):
         score += 1 if match[1].lower() == language else -1
     return score >= 0
+
+
+# detailed language analysis: signals from host, path and query combined by policy
+LANG_POLICIES = ("lenient", "balanced", "strict")
+LANG_VARIANTS = ("exact", "primary")
+
+# query values may spell the language out, e.g. lang=deutsch
+_LANG_ALIASES = {
+    alias: code for code, aliases in TARGET_LANGS.items() for alias in aliases
+}
+
+
+class LangVerdict(str, Enum):
+    "Combined outcome of the language cues found in a URL."
+
+    MATCH = "match"  # all cues point to the target language
+    MISMATCH = "mismatch"  # all cues point away from it
+    CONFLICT = "conflict"  # cues contradict each other, manual decision needed
+    UNKNOWN = "unknown"  # no usable language cue
+
+
+@dataclass(frozen=True)
+class LangSignal:
+    "A single language cue found in a URL."
+
+    source: str  # "host", "path" or "query"
+    cue: str  # raw segment as found, e.g. "de" or "en-US"
+    match: bool | None  # None: not a recognized language code
+    label: bool  # False: candidate only, cannot label the URL on its own
+
+
+@dataclass(frozen=True)
+class LangAnalysis:
+    "Detailed outcome of analyze_language()."
+
+    language: str
+    variant: str
+    policy: str
+    verdict: LangVerdict
+    signals: tuple[LangSignal, ...]
+    accepted: bool
+
+    @property
+    def needs_review(self) -> bool:
+        "Conflicting cues cannot be decided automatically."
+        return self.verdict is LangVerdict.CONFLICT
+
+
+def _parse_locale(value: str) -> tuple[str, str]:
+    "Split a locale cue into normalized (language, territory) parts."
+    lang, _, territory = value.replace("_", "-").partition("-")
+    return lang.lower(), territory.upper()
+
+
+def _recognized_locale(locale: tuple[str, str]) -> bool:
+    lang, territory = locale
+    return lang in ISO_LANGS and (not territory or territory in ISO_TERRS)
+
+
+def _make_signal(
+    source: str, cue: str, target: tuple[str, str], variant: str, label: bool
+) -> LangSignal:
+    locale = _parse_locale(_LANG_ALIASES.get(cue.lower(), cue))
+    match = None
+    if _recognized_locale(locale):
+        match = target == locale if variant == "exact" else target[0] == locale[0]
+    return LangSignal(source, cue, match, label)
+
+
+def _path_lang_signals(
+    url: str, target: tuple[str, str], variant: str, trailing_slash: bool
+) -> list[LangSignal]:
+    "Collect path segments that look like language codes."
+    regex = ALL_PATH_LANGS if trailing_slash else ALL_PATH_LANGS_NO_TRAILING
+    occurrences = regex.findall(url)
+    if not occurrences:
+        return []
+    # too many look-alike segments: article paths, none can serve as a label
+    reliable = len(occurrences) <= 2
+    first_is_locale = bool(PATH_LANG_FILTER.match(url))
+    signals = []
+    for index, occurrence in enumerate(occurrences):
+        cue = occurrence[0] + occurrence[1]
+        # only the leading segment or an explicit locale (de-AT) labels a page;
+        # deeper bare segments like /report/de/ stay candidates
+        label = reliable and bool(occurrence[1] or (index == 0 and first_is_locale))
+        signals.append(_make_signal("path", cue, target, variant, label))
+    return signals
+
+
+def _query_lang_signals(
+    url: str, target: tuple[str, str], variant: str
+) -> list[LangSignal]:
+    "Collect language statements from query parameters, e.g. ?lang=de."
+    if "?" not in url:
+        return []
+    signals = []
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        # a parameter without value doesn't state any language
+        if key.lower() in LANG_PARAMS and value:
+            signals.append(_make_signal("query", value, target, variant, True))
+    return signals
+
+
+def analyze_language(
+    url: str,
+    language: str,
+    policy: str = "balanced",
+    variant: str = "primary",
+    trailing_slash: bool = True,
+) -> LangAnalysis:
+    """Detail how a URL relates to a target language.
+
+    Collects cues from the host subdomain, the path and the query string,
+    then combines them into a verdict according to the chosen policy:
+
+    - lenient: accept match, unknown and conflict (only mismatch is rejected)
+    - balanced: accept match and unknown, conflicts need a manual decision
+    - strict: accept explicit matches only
+
+    Regional variants are compared by primary language ("primary", de-AT ≈ de)
+    or exactly ("exact", de-AT ≠ de-CH). URLs without any language cue are
+    unknown, not mismatched.
+    """
+    if policy not in LANG_POLICIES:
+        raise ValueError(f"unknown language policy: {policy}")
+    if variant not in LANG_VARIANTS:
+        raise ValueError(f"unknown variant matching mode: {variant}")
+    target = _parse_locale(language)
+    if not _recognized_locale(target):
+        raise ValueError(f"unrecognized target language: {language}")
+
+    signals: list[LangSignal] = []
+    # host subdomain, e.g. de.example.com
+    if match := HOST_LANG_FILTER.match(url):
+        signals.append(_make_signal("host", match[1], target, variant, True))
+    signals.extend(_path_lang_signals(url, target, variant, trailing_slash))
+    signals.extend(_query_lang_signals(url, target, variant))
+
+    # only recognized labels decide; candidates and unreadable cues are context
+    decisive = [s.match for s in signals if s.label and s.match is not None]
+    if not decisive:
+        verdict = LangVerdict.UNKNOWN
+    elif all(decisive):
+        verdict = LangVerdict.MATCH
+    elif not any(decisive):
+        verdict = LangVerdict.MISMATCH
+    else:
+        verdict = LangVerdict.CONFLICT
+
+    accepted = (
+        verdict is LangVerdict.MATCH
+        or (policy != "strict" and verdict is LangVerdict.UNKNOWN)
+        or (policy == "lenient" and verdict is LangVerdict.CONFLICT)
+    )
+    return LangAnalysis(language, variant, policy, verdict, tuple(signals), accepted)
 
 
 def path_filter(urlpath: str, query: str) -> bool:

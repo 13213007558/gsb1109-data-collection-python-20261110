@@ -49,6 +49,55 @@ if lang_filter('https://example.com/en/article', language='en'):
     print("Language matches")
 ```
 
+#### Language decision details
+
+Multilingual sites may state the language in the subdomain, the path, and the
+query string at the same time — and these cues can contradict each other.
+`analyze_language` returns the full breakdown instead of a bare yes/no, so
+callers can see *why* a URL was filtered and which ones need a human:
+
+```python
+from courlan import analyze_language
+
+analysis = analyze_language('https://de.example-shop.com/en/offers', language='de')
+analysis.verdict       # LangVerdict.CONFLICT — host says German, path says English
+analysis.needs_review  # True — route to manual decision
+analysis.accepted      # False under the default "balanced" policy
+analysis.signals       # (LangSignal('host', 'de', True, True),
+                       #  LangSignal('path', 'en', False, True))
+```
+
+Each URL gets one of four verdicts: `MATCH` (all cues agree with the target),
+`MISMATCH` (all cues point elsewhere), `CONFLICT` (cues contradict each other),
+or `UNKNOWN` (no usable cue — notably, a missing cue is never read as the wrong
+language). The caller picks a `policy` to combine them:
+
+| Policy | `MATCH` | `UNKNOWN` | `CONFLICT` | `MISMATCH` |
+|--------|---------|-----------|------------|------------|
+| `lenient` | accept | accept | accept | reject |
+| `balanced` (default) | accept | accept | manual review | reject |
+| `strict` | accept | reject | reject | reject |
+
+Regional variants are configurable via `variant`: `"primary"` (default) treats
+`de-AT` as German, `"exact"` requires the full locale to be identical
+(`de-AT` ≠ `de-CH`, and a bare target `de` no longer matches `de-AT` cues).
+
+Path segments that merely look like language codes are collected as candidates
+but cannot label a page on their own: only the leading segment (`/de/…`) or an
+explicit locale (`/de-AT/…`) counts as a label, and paths with more than two
+look-alike segments (typical of article URLs) are ignored as labels altogether.
+
+Example — a shop whose German subdomain serves English paths:
+
+| URL | Verdict | Decision (`balanced`) |
+|-----|---------|----------------------|
+| `https://de.example-shop.com/de/angebote` | `MATCH` | filtered in automatically |
+| `https://de.example-shop.com/en/offers` | `CONFLICT` | manual decision |
+| `https://de.example-shop.com/en/offers?lang=en` | `CONFLICT` | manual decision |
+| `https://de.example-shop.com/katalog` | `MATCH` (host label) | filtered in automatically |
+| `https://example-shop.com/report/de/sommer-sale` | `UNKNOWN` (candidate only) | kept, not labeled |
+| `https://fr.example-shop.com/en/offers` | `MISMATCH` | filtered out automatically |
+
 ### Strict mode
 
 `strict=True` enables more aggressive filtering — blacklisted domains, adult content, and suspicious paths are rejected, query parameters are trimmed more aggressively, and language detection uses subdomains too.

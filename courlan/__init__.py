@@ -14,6 +14,10 @@ __version__ = "1.4.0"
 from .clean import clean_url, normalize_url, scrub_url
 from .core import check_url, extract_links, filter_links
 from .filters import (
+    LangAnalysis,
+    LangSignal,
+    LangVerdict,
+    analyze_language,
     is_navigation_page,
     is_not_crawlable,
     is_valid_url,
@@ -44,6 +48,10 @@ __all__ = [
     "is_not_crawlable",
     "is_valid_url",
     "lang_filter",
+    "analyze_language",
+    "LangAnalysis",
+    "LangSignal",
+    "LangVerdict",
     "validate_url",
     "sample_urls",
     "UrlStore",
