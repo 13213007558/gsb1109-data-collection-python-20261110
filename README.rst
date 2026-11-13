@@ -404,6 +404,62 @@ Specifying --payload or --headers will output only the payload or only the WARC 
     warcio extract [--payload | --headers] filename offset
 
 
+Subset
+~~~~~~
+
+The ``subset`` command exports a reproducible subset of one or more
+WARC/ARC files. Filtering by URL alone loses request/response pairs,
+``warcinfo`` context, and revisit dependencies, so related records are
+included according to an explicit policy.
+
+Seeds are given as record IDs (``-r``/``--record-id``) or exact target
+URIs (``-u``/``--url``). ``--seed`` accepts either and detects record IDs
+by their angle brackets or ``urn:`` prefix.
+
+::
+
+    warcio subset input.warc.gz output.warc.gz \
+        -u http://example.com/page \
+        -m subset-manifest.json --verify
+
+``-f``/``--follow`` selects the relation policies to follow, defaulting
+to ``all``:
+
+- ``concurrent``: follow ``WARC-Concurrent-To`` in both directions, so
+  captured requests stay paired with their responses and revisits.
+- ``refers-to``: follow ``WARC-Refers-To`` and
+  ``WARC-Refers-To-Target-URI``/``WARC-Refers-To-Date`` references.
+- ``payload``: for a revisit without a body, include the record carrying
+  its ``WARC-Payload-Digest``.
+- ``warcinfo``: include the ``warcinfo`` records for the source archives
+  used by the subset.
+
+Use ``--no-warcinfo`` to exclude ``warcinfo`` records. ``-f none``
+includes only the seeds. ``-n``/``--max-records`` fails before writing if
+the resolved subset would exceed the given size.
+
+Exported records keep their original ``WARC-Record-ID`` and raw block
+bytes, including HTTP headers and payloads. Output records are emitted in
+source order and shared dependencies are included only once.
+
+The JSON manifest written with ``-m`` lists every included record, its
+source offset/length, and the reason it was selected. It also lists
+``missing`` dependencies: references that an included record needs but
+that are not in the export. A subset with any such dependency has
+``"complete": false``; it is never reported as complete.
+
+``--verify`` re-reads the written archive and checks that request/response
+pairs, revisit references, shared payloads, IDs, and payload digests are
+explainable within the export. It exits with status 1 if anything is
+unresolved, including an incomplete manifest.
+
+The exporter also handles ARC input. A converted record whose synthesized
+``Content-Length`` disagrees with its actual block is corrected only when
+it has no block digest; such records are marked
+``normalized_content_length`` in the manifest. Digested WARC records are
+never rewritten.
+
+
 Remote File System Support
 --------------------------
 

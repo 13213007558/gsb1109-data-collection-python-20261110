@@ -3,6 +3,7 @@
 
 - Replace unmaintained brotlipy with brotlicffi>=1.2.1.0 by @ato https://github.com/webrecorder/warcio/pull/211
 - Add Content-Encoding: x-gzip as an alias for gzip by @sammist2 in https://github.com/webrecorder/warcio/pull/210
+- Add ``warcio subset``, a policy-driven subset exporter for WARC/ARC files with a JSON manifest of unresolved dependencies
 
 1.8.1
 ~~~~~

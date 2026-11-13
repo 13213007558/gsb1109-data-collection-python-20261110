@@ -4,6 +4,7 @@ from warcio.indexer import Indexer
 from warcio.checker import Checker
 from warcio.extractor import Extractor
 from warcio.recompressor import Recompressor
+from warcio.subset import SubsetError, SubsetExporter, SubsetPolicy
 
 
 try:
@@ -58,6 +59,39 @@ def main(args=None):
     check.add_argument('-v', '--verbose', action='store_true')
     check.set_defaults(func=checker)
 
+    subset = subparsers.add_parser(
+        'subset', help='Export a reproducible subset of WARC/ARC records',
+        formatter_class=RawTextHelpFormatter)
+    subset.add_argument('inputs', nargs='+',
+                        help='input file(s), or "-" for stdin')
+    subset.add_argument('output',
+                        help='output WARC; use .gz for record-compressed gzip')
+    subset.add_argument('-m', '--manifest',
+                        help='write a JSON manifest of included records '
+                             'and unresolved dependencies')
+    subset.add_argument('-r', '--record-id', action='append', default=[],
+                        metavar='ID',
+                        help='seed by WARC-Record-ID (repeatable)')
+    subset.add_argument('-u', '--url', action='append', default=[],
+                        metavar='URL',
+                        help='seed by exact WARC-Target-URI (repeatable)')
+    subset.add_argument('--seed', action='append', default=[],
+                        metavar='ID|URL',
+                        help='seed; record IDs are detected by urn:/<...>')
+    subset.add_argument('-f', '--follow', default='all',
+                        help='comma-separated relation policies to follow: '
+                             'concurrent,refers-to,payload,warcinfo (all|none)')
+    subset.add_argument('--no-warcinfo', action='store_true',
+                        help='do not include warcinfo records')
+    subset.add_argument('-n', '--max-records', type=int,
+                        help='fail instead of writing more than this many records')
+    subset.add_argument('--no-gzip', action='store_true',
+                        help='write an uncompressed WARC')
+    subset.add_argument('--verify', action='store_true',
+                        help='verify the written archive and exit non-zero '
+                             'on unresolved references')
+    subset.set_defaults(func=subsetter)
+
     cmd = parser.parse_args(args=args)
     cmd.func(cmd)
 
@@ -90,6 +124,47 @@ def extractor(cmd):
 def recompressor(cmd):
     _recompressor = Recompressor(cmd.filename, cmd.output, cmd.verbose)
     _recompressor.recompress()
+
+
+# ============================================================================
+def subsetter(cmd):
+    try:
+        policy = SubsetPolicy(
+            follow=cmd.follow,
+            include_warcinfo=False if cmd.no_warcinfo else None)
+    except ValueError as e:
+        sys.exit(str(e))
+
+    exporter = SubsetExporter(cmd.inputs, output=cmd.output,
+                              manifest=cmd.manifest, policy=policy,
+                              seed_ids=cmd.record_id, seed_uris=cmd.url,
+                              max_records=cmd.max_records,
+                              gzip_output=False if cmd.no_gzip else None)
+
+    for seed in cmd.seed:
+        exporter.add_seed(seed)
+
+    try:
+        exporter.export()
+    except SubsetError as e:
+        sys.exit(str(e))
+
+    if cmd.manifest:
+        data = exporter.manifest_data()
+        if data['complete']:
+            sys.stderr.write('Subset complete: {0} records\n'.format(
+                data['record_count']))
+        else:
+            sys.stderr.write('Subset incomplete: {0} unresolved dependencies\n'.format(
+                len(data['missing'])))
+
+    if cmd.verify:
+        problems = exporter.verify()
+        if problems:
+            for problem in problems:
+                sys.stderr.write(problem + '\n')
+            sys.exit(1)
+        sys.stderr.write('Verification passed\n')
 
 
 # ============================================================================
