@@ -67,6 +67,34 @@ Although the time delta between the original publication and the "last modified"
     '2016-06-23'
 
 
+Structured data (JSON-LD)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+JSON-LD blocks often describe a whole page graph at once: the web site, the
+organization behind it, the main article and a series of related or
+recommended articles. The blocks are parsed as an entity graph (handling
+``@graph`` containers, ``@id`` references and duplicate descriptions) and
+the date is taken from the target entity only — never from neighbouring
+articles or site metadata such as an organization's founding date.
+
+The target entity is selected by page URL (the ``url`` argument or the
+canonical link) or explicitly by entity identifier, independently of the
+order of the JSON nodes:
+
+.. code-block:: python
+
+    >>> find_date(htmldoc, url='https://example.org/news/main-story')
+    '2024-11-06'
+    >>> find_date(htmldoc, target_entity='https://example.org/news/main-story#article')
+    '2024-11-06'
+
+Dates are collected from the target entity and explicitly allowed
+relations (``mainEntity``/``mainEntityOfPage``). Circular references and
+conflicting duplicate descriptions of the same entity are reported as
+warnings. Pages without usable structured entities are handled by the
+traditional text-based heuristics as before.
+
+
 Settings
 --------
 

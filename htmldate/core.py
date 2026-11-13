@@ -819,6 +819,7 @@ def find_date(
     min_date: datetime | str | None = None,
     max_date: datetime | str | None = None,
     deferred_url_extractor: bool = False,
+    target_entity: str | None = None,
 ) -> str | None:
     """
     Extract dates from HTML documents using markup analysis and text patterns
@@ -855,6 +856,10 @@ def find_date(
         Use url extractor as backup only to prioritize full expressions,
         e.g. of the type `%Y-%m-%d %H:%M:%S`
     :type deferred_url_extractor: boolean
+    :param target_entity:
+        Identifier (@id) of the JSON-LD entity to extract the date from
+        (by default the entity matching the page URL or the main article)
+    :type target_entity: string
     :return: Returns a valid date expression as a string, or None
     """
 
@@ -885,6 +890,10 @@ def find_date(
         urlelem = tree.find('.//link[@rel="canonical"]')
         if urlelem is not None:
             url = urlelem.get("href")
+
+    # used to select the target entity in JSON-LD structured data
+    options.url = url
+    options.target = target_entity
 
     # direct processing of URL info
     url_result = extract_url_date(url, options)

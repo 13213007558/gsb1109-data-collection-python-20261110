@@ -5,6 +5,7 @@ Unit tests for the htmldate library.
 import datetime
 import importlib
 import io
+import json
 import logging
 import os
 import re
@@ -44,6 +45,7 @@ from htmldate.extractors import (
     external_date_parser,
     get_external_parser,
     idiosyncrasies_search,
+    json_search,
     regex_parse,
     try_date_expr,
     FAST_PREPEND,
@@ -879,6 +881,205 @@ def test_json_ld_over_header_reserve():
         )
         == "2023-05-20"
     )
+
+
+MAIN_URL = "https://example.org/news/main-story"
+
+
+def _jsonld_page(nodes, canonical=None):
+    "Build an HTML page embedding the given JSON-LD nodes in a single @graph."
+    link = f'<link rel="canonical" href="{canonical}"/>' if canonical else ""
+    data = json.dumps({"@context": "https://schema.org", "@graph": nodes})
+    return (
+        f"<html><head>{link}"
+        f'<script type="application/ld+json">{data}</script>'
+        "</head><body><p>text</p></body></html>"
+    )
+
+
+def _sample_graph():
+    "Site, organization, recommended articles, and the main article (last)."
+    return [
+        {
+            "@type": "WebSite",
+            "@id": "https://example.org/#website",
+            "url": "https://example.org/",
+            "name": "Example",
+        },
+        {
+            "@type": "Organization",
+            "@id": "https://example.org/#org",
+            "name": "Example Org",
+            "foundingDate": "1998-04-01",
+        },
+        {
+            "@type": "Article",
+            "@id": "https://example.org/news/older-story#article",
+            "mainEntityOfPage": {"@id": "https://example.org/news/older-story"},
+            "datePublished": "2021-03-03",
+        },
+        {
+            "@type": "Article",
+            "@id": "https://example.org/news/newer-story#article",
+            "mainEntityOfPage": {"@id": "https://example.org/news/newer-story"},
+            "datePublished": "2022-04-04",
+        },
+        {
+            "@type": "NewsArticle",
+            "@id": f"{MAIN_URL}#article",
+            "mainEntityOfPage": {"@id": MAIN_URL},
+            "datePublished": "2024-11-06T08:37:00+00:00",
+            "dateModified": "2024-11-07T09:00:00+00:00",
+        },
+    ]
+
+
+def test_json_ld_target_selection():
+    """The caller selects the target article by page URL or entity
+    identifier; the result must not depend on the JSON node order."""
+    page = _jsonld_page(_sample_graph())
+    # by page URL (the main article is deliberately last in the graph)
+    assert find_date(page, url=MAIN_URL, original_date=True) == "2024-11-06"
+    assert find_date(page, url=MAIN_URL, original_date=False) == "2024-11-07"
+    # by entity identifier
+    assert (
+        find_date(page, target_entity=f"{MAIN_URL}#article", original_date=True)
+        == "2024-11-06"
+    )
+    # node order must not matter: same graph with the main article first
+    reordered = _jsonld_page(list(reversed(_sample_graph())))
+    assert find_date(reordered, url=MAIN_URL, original_date=True) == "2024-11-06"
+    # the organization's founding date must never leak into the result
+    only_org = _jsonld_page(_sample_graph()[:2])
+    assert json_search(load_html(only_org), OPTIONS) is None
+
+
+def test_json_ld_entity_references():
+    """@id references are resolved: a WebPage and its mainEntity article
+    share dates along the explicitly allowed relations."""
+    # date on the article, target selected via the page URL
+    nodes = [
+        {
+            "@type": "WebPage",
+            "@id": f"{MAIN_URL}#webpage",
+            "url": MAIN_URL,
+            "mainEntity": {"@id": "#main-article"},
+        },
+        {"@type": "NewsArticle", "@id": "#main-article", "datePublished": "2024-11-06"},
+    ]
+    assert find_date(_jsonld_page(nodes), url=MAIN_URL, original_date=True) == (
+        "2024-11-06"
+    )
+    # date on the web page, target selected via the article's identifier
+    nodes = [
+        {
+            "@type": "WebPage",
+            "@id": f"{MAIN_URL}#webpage",
+            "url": MAIN_URL,
+            "mainEntity": {"@id": "#main-article"},
+            "datePublished": "2024-11-06",
+        },
+        {"@type": "NewsArticle", "@id": "#main-article"},
+    ]
+    assert find_date(
+        _jsonld_page(nodes), target_entity="#main-article", original_date=True
+    ) == "2024-11-06"
+
+
+def test_json_ld_duplicate_entity_conflict(caplog):
+    """Duplicate descriptions of one entity are merged; conflicting values
+    trigger a diagnostic warning."""
+    page = (
+        "<html><head>"
+        '<script type="application/ld+json">'
+        '{"@type":"NewsArticle","@id":"#article","datePublished":"2024-11-06"}'
+        "</script>"
+        '<script type="application/ld+json">'
+        '{"@type":"NewsArticle","@id":"#article","datePublished":"2024-11-07"}'
+        "</script>"
+        "</head><body><p>x</p></body></html>"
+    )
+    with caplog.at_level(logging.WARNING, logger="htmldate.jsonld"):
+        result = find_date(page, original_date=True)
+    # the first description wins and the conflict is reported
+    assert result == "2024-11-06"
+    assert any("conflicting descriptions" in r.message for r in caplog.records)
+
+
+def test_json_ld_circular_reference(caplog):
+    """Circular @id references are diagnosed and do not break extraction."""
+    nodes = [
+        {
+            "@type": "WebPage",
+            "@id": f"{MAIN_URL}#webpage",
+            "url": MAIN_URL,
+            "mainEntity": {"@id": "#article"},
+            "dateModified": "2024-11-08",
+        },
+        {
+            "@type": "NewsArticle",
+            "@id": "#article",
+            "mainEntityOfPage": {"@id": f"{MAIN_URL}#webpage"},
+            "mainEntity": {"@id": f"{MAIN_URL}#webpage"},
+            "datePublished": "2024-11-06",
+        },
+    ]
+    page = _jsonld_page(nodes)
+    with caplog.at_level(logging.WARNING, logger="htmldate.jsonld"):
+        assert find_date(page, url=MAIN_URL, original_date=True) == "2024-11-06"
+        assert find_date(page, url=MAIN_URL, original_date=False) == "2024-11-08"
+    assert any("circular reference" in r.message for r in caplog.records)
+
+
+def test_json_ld_unknown_target(caplog):
+    """An unknown entity identifier is diagnosed, not silently ignored."""
+    with caplog.at_level(logging.WARNING, logger="htmldate.jsonld"):
+        find_date(
+            _jsonld_page(_sample_graph()),
+            target_entity="https://example.org/#missing",
+            original_date=True,
+        )
+    assert any("target entity not found" in r.message for r in caplog.records)
+
+
+def test_json_ld_no_neighbor_fill():
+    """A target entity without a date must not borrow one from neighbouring
+    articles; pages without usable structured entities keep the regex path."""
+    nodes = [
+        {
+            "@type": "NewsArticle",
+            "@id": f"{MAIN_URL}#article",
+            "mainEntityOfPage": {"@id": MAIN_URL},
+        },
+        {
+            "@type": "Article",
+            "@id": "https://example.org/news/other-story#article",
+            "datePublished": "2021-03-03",
+        },
+    ]
+    page = _jsonld_page(nodes)
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+    options.url = MAIN_URL
+    assert json_search(load_html(page), options) is None
+    # several date-bearing articles and no selector: no order-dependent pick
+    options = Extractor(True, LATEST_POSSIBLE, MIN_DATE, True, OUTPUTFORMAT)
+    assert json_search(load_html(_jsonld_page(_sample_graph())), options) is None
+    # broken JSON-LD still goes through the legacy regex path
+    broken = (
+        "<html><head>"
+        '<script type="application/ld+json">'
+        '{"@type":"Article","datePublished":"2020-05-05",}</script>'
+        "</head><body><p>x</p></body></html>"
+    )
+    assert find_date(broken, original_date=True) == "2020-05-05"
+    # non JSON-LD script blocks are still scanned as before
+    settings = (
+        "<html><head>"
+        '<script type="application/settings+json">'
+        '{"datePublished":"2020-05-05"}</script>'
+        "</head><body><p>x</p></body></html>"
+    )
+    assert find_date(settings, original_date=True) == "2020-05-05"
 
 
 def test_examine_header():

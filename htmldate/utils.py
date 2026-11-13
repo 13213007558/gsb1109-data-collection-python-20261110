@@ -52,6 +52,10 @@ class Extractor:
     min: datetime
     original: bool
     format: str
+    # page URL and JSON-LD entity identifier used to select the target
+    # entity in structured data (see htmldate.jsonld)
+    url: str | None = None
+    target: str | None = None
 
 
 def is_wrong_document(data: str | bytes | HtmlElement | None) -> bool:

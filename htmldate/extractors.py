@@ -18,6 +18,7 @@ from lxml.etree import XPath
 from lxml.html import HtmlElement
 
 # own
+from .jsonld import build_entity_graph
 from .settings import CACHE_SIZE, MAX_SEGMENT_LEN
 from .utils import Extractor, remove_if_attached, trim_text
 from .validators import convert_date, correct_year, is_valid_date, validate_and_convert
@@ -526,16 +527,51 @@ def json_search(
     tree: HtmlElement,
     options: Extractor,
 ) -> str | None:
-    """Look for JSON time patterns in JSON sections of the tree"""
-    # determine pattern
+    """Look for dates in JSON sections of the tree.
+
+    JSON-LD blocks are parsed as an entity graph so that the date comes
+    from the target entity (selected by page URL or entity identifier) and
+    its explicitly allowed relations only — never from neighbouring
+    articles. The plain regex search remains as a fallback for pages
+    without usable structured entities.
+    """
     json_pattern = JSON_PUBLISHED if options.original else JSON_MODIFIED
-    # look throughout the HTML tree
+    ld_texts, legacy_texts = [], []
     for elem in tree.xpath(
         './/script[@type="application/ld+json" or @type="application/settings+json"]'
     ):
-        if not elem.text or '"date' not in elem.text:
+        if not elem.text:
             continue
-        result = pattern_search(elem.text, json_pattern, options)
+        if elem.get("type") == "application/ld+json":
+            ld_texts.append(elem.text)
+        else:
+            legacy_texts.append(elem.text)
+    if any('"date' in text.lower() for text in ld_texts):
+        graph, broken = build_entity_graph(ld_texts)
+        if graph.entities:
+            graph.diagnose()
+            target = graph.select_target(
+                url=options.url, target_id=options.target, original=options.original
+            )
+            if target is not None:
+                for raw in graph.candidate_values(target, options.original):
+                    result = try_date_expr_opts(raw, options) or custom_parse(
+                        raw, options.format, options.min, options.max
+                    )
+                    if result is not None:
+                        return result
+            if not broken:
+                # structured entities are present: do not fill the gap with
+                # dates from neighbouring entities
+                return None
+            legacy_texts.extend(broken)
+        else:
+            # nothing structured to work with: scan all JSON-LD texts as before
+            legacy_texts.extend(ld_texts)
+    for text in legacy_texts:
+        if '"date' not in text.lower():
+            continue
+        result = pattern_search(text, json_pattern, options)
         if result is not None:
             return result
     return None
