@@ -1,6 +1,7 @@
 1.8.2
 ~~~~~
 
+- Add offline reassembly of segmented WARC 1.1 records via ``WARCSegmentReassembler``, with segment number, identity, total length and end-marker validation, conflict and gap reporting, streaming output and per-segment provenance
 - Replace unmaintained brotlipy with brotlicffi>=1.2.1.0 by @ato https://github.com/webrecorder/warcio/pull/211
 - Add Content-Encoding: x-gzip as an alias for gzip by @sammist2 in https://github.com/webrecorder/warcio/pull/210
 

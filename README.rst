@@ -321,7 +321,40 @@ The library also includes additional semantics for:
  - Reading a full WARC record from a stream
 
 Please refer to `warcwriter.py <warcio/warcwriter.py>`__ and
-`test/test\_writer.py <test/test_writer.py>`__ for additional examples.
+`test/test\\_writer.py <test/test_writer.py>`__ for additional examples.
+
+Reassembling Segmented WARC Records
+-----------------------------------
+
+A WARC 1.1 record that is too large for one file may be stored as a first
+record carrying ``WARC-Segment-Number: 1`` followed by one or more
+``continuation`` records that reference it with ``WARC-Segment-Origin-ID``;
+the final segment carries ``WARC-Segment-Total-Length``. The
+``WARCSegmentReassembler`` rebuilds the original record from such segments
+read from any number of plain or record-gzipped WARC files. The input files
+may be passed in any order.
+
+::
+
+    from warcio import WARCSegmentReassembler
+
+    with WARCSegmentReassembler(['part-3.warc.gz', 'part-1.warc.gz',
+                                 'part-2.warc.gz']) as reassembler:
+        for record in reassembler:
+            if record.is_complete():
+                body = record.raw_stream.read()  # streamed, spool-backed
+            else:
+                # record.problems explains the gap or the failed check
+                ...
+
+The reassembler validates the head record identity, the segment numbering,
+the declared total length and the terminal marker. Identical duplicate
+copies of a segment are accepted, while conflicting duplicates raise
+``SegmentConflictError``. When an interior segment is missing,
+``record.missing_segments`` lists the gap and the stream raises
+``MissingSegmentError`` at that point instead of joining the surrounding
+bytes. Per-segment provenance (source file, offset, member length, segment
+ids) stays queryable through ``record.get_segment_info()``.
 
 WARCIO CLI: Indexing and Recompression
 --------------------------------------
